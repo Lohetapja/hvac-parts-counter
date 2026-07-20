@@ -57,6 +57,24 @@ button, input, select, textarea { font: inherit; } button { cursor: pointer; }
 .duct-catalogue { display: grid; gap: 3px; max-height: 220px; overflow-y: auto; }.duct-cat-row { display: flex; gap: 6px; align-items: flex-start; padding: 4px 6px; border: 1px solid #253549; border-radius: 6px; background: #0b141e; font-size: 9px; color: #c5d6e6; }.duct-cat-row.disabled { opacity: .5; }.duct-cat-row span { display: flex; flex-direction: column; }.duct-cat-row small { color: var(--muted); font-size: 8px; }
 .duct-rejected { margin-top: 6px; padding: 6px; border: 1px dashed #6b562d; border-radius: 6px; color: #f8d999; font-size: 9px; }.duct-reject { flex: 0 0 auto; }
 .material-subhead { grid-column: 1/-1; margin: 10px 0 4px; color: var(--accent); font-size: 10px; text-transform: uppercase; letter-spacing: .8px; }.duct-material-card { align-items: flex-start; }.duct-material-parts { margin: 6px 0 0; padding-left: 16px; color: var(--muted); font-size: 10px; line-height: 1.5; }.duct-material-parts b { color: var(--text); }.duct-mat-status { color: #8fa6ba; font-size: 8px; }
+.duct-primary .btn { min-height: 40px; font-weight: 700; }.duct-hl-tulo { background: linear-gradient(180deg,#1f8fc4,#12678f) !important; border-color: #52d6ff !important; }.duct-hl-poisto { background: linear-gradient(180deg,#c46a34,#8f4a1f) !important; border-color: #ff9b6b !important; }
+.duct-counts { display: grid; grid-template-columns: repeat(3,1fr); gap: 4px; margin: 8px 0; }.duct-counts div { padding: 6px 3px; text-align: center; background: #0b141e; border: 1px solid #26384d; border-radius: 6px; }.duct-counts b { display: block; font-size: 12px; }.duct-counts span { color: var(--muted); font-size: 8px; text-transform: uppercase; }.duct-counts .warn { border-color: #6b562d; background: #2a2112; }.duct-counts .warn b { color: #f8d999; }
+.duct-labels-line { margin: 4px 0 8px; color: var(--muted); font-size: 9px; }.duct-labels-line span { display: inline-block; margin: 0 3px 3px 0; padding: 2px 5px; border: 1px solid #2c4055; border-radius: 5px; background: #0c151f; color: #cfe2f2; }
+.duct-ur-block { margin: 8px 0; padding: 7px; border: 1px solid #6b3339; border-radius: 8px; background: #1e0f12; }.duct-ur-row { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 6px; align-items: center; margin-bottom: 5px; font-size: 9px; color: #ffc2c8; }.duct-ur-row b { color: #ff9aa2; }
+.duct-advanced { margin-top: 8px; }.duct-advanced summary { cursor: pointer; color: var(--muted); font-size: 10px; padding: 4px 0; }.duct-advanced summary:hover { color: var(--text); }
 @media (max-width: 1280px) { .workspace { grid-template-columns: 245px minmax(430px,1fr) 315px; }.workflow { display: none; }.topbar { gap: 8px; }.brand { min-width: 205px; }.workspace-tabs button { padding-inline: 8px; }.sidebar { padding: 8px; }.headline-grid { grid-template-columns: repeat(3,1fr); }.builder-metrics { grid-template-columns: repeat(3,1fr); }.builder-3d { height: 340px; }.technical-view svg { height: 215px; } }
 @media (max-width: 1050px) { body { min-width: 860px; overflow: auto; }.app-shell { min-height: 100vh; height: auto; }.builder-shell { grid-template-columns: 1fr; }.builder-controls { overflow: visible; border-right: 0; border-bottom: 1px solid var(--line); }.builder-visuals { overflow: visible; }.technical-grid { grid-template-columns: 1fr; }.material-columns { grid-template-columns: 1fr; }.workspace-tabs { order: 3; width: 100%; justify-content: center; }.topbar { flex-wrap: wrap; } }
 @media (max-width: 600px) { .dimension-editor { position: fixed; inset: auto 8px 8px 8px; width: auto; border-radius: 14px; }.dimension-editor .btn,.builder-context .btn,.airflow-panel .btn,.airflow-review-panel .btn { min-height: 44px; }.technical-view svg { min-height: 280px; }.editable-target,.edge-target { -webkit-tap-highlight-color: rgba(45,156,214,.24); } }
+/* Network-first mobile/tablet layout. Defined last so it wins the source-order cascade. */
+@media (max-width: 820px) {
+  body { min-width: 340px; overflow: auto; }
+  .app-shell { min-height: 100vh; height: auto; }
+  .workspace { grid-template-columns: 1fr; }
+  .sidebar, .sidebar.left, .sidebar.right { overflow: visible; border: 0; border-bottom: 1px solid var(--line); }
+  .viewer-column { min-height: 60vh; }
+  .duct-panel { order: -1; }
+  .duct-primary .btn, .duct-panel .btn, .duct-review-panel .btn { min-height: 44px; }
+  .headline-grid { grid-template-columns: repeat(2,1fr); }
+  .material-columns { grid-template-columns: 1fr; }
+  .duct-counts { grid-template-columns: repeat(3,1fr); }
+}

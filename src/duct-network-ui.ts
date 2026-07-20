@@ -2,10 +2,12 @@ import type { Point, ProjectData, Tool } from './types';
 import type { DuctNetwork, DuctNode, DuctSegment, DuctSystemType } from './duct-network-types';
 import { profileLabel, systemTypeToLabel } from './duct-network-types';
 import {
-  countNetworkParts, createNetwork, createSegment, deriveSuggestedNodes, highlightSummary, networkForSegment,
-  networkNodes, networkSegments, networksOfKind, networkTotals, recomputeSegmentLengths, removeNetwork, touch,
-  traceFromSeed, uid, type TraceLine,
+  autoDetectNetworks, boundariesForNetwork, countNetworkParts, createContractBoundary, createNetwork, createSegment,
+  deriveSuggestedNodes, excludedSegmentIds, highlightSummary, networkCounts, networkForSegment, networkNodes, networkSegments,
+  networksOfKind, networkTotals, recomputeSegmentLengths, removeNetwork, touch, traceFromSeed, uid,
+  type TraceLine,
 } from './duct-network';
+import type { ContractBoundary, ContractScopeSide } from './duct-network-types';
 import { createDemoDuctNetwork } from './duct-fixture';
 import { profileFromSizeText } from './duct-labels';
 import { catalogueName, mergedCatalogue } from './duct-catalogue';
@@ -67,9 +69,11 @@ export function initDuctNetworkUi(context: DuctNetworkContext): DuctNetworkContr
   let selectedNetworkId: string | null = null;
   let selectedSegmentId: string | null = null;
   let selectedNodeId: string | null = null;
+  let selectedBoundaryId: string | null = null;
   let traceDraft: Point[] = [];
   let progressCancelled = false;
   let tracing = false;
+  const view = { showUR: true, showSuggested: true, showLabels: true, verifiedOnly: false };
 
   // --- Panels -------------------------------------------------------------
   const controlPanel = document.createElement('section');
@@ -77,19 +81,19 @@ export function initDuctNetworkUi(context: DuctNetworkContext): DuctNetworkContr
   controlPanel.innerHTML = `
     <div class="panel-header"><h2>Duct Systems</h2><span id="ductNetCount" class="badge muted">0 networks</span></div>
     <div class="panel-body">
-      <p class="help">Highlight complete connected <b>Tulo-kanavisto</b> / <b>Poistokanavisto</b>. Separate from individual airflow points.</p>
-      <div class="button-row"><button class="btn small" data-duct-action="highlight-tulo">Highlight all Tulo</button><button class="btn small" data-duct-action="highlight-poisto">Highlight all Poisto</button></div>
-      <div class="button-row"><button class="btn small" data-duct-action="highlight-selected">Highlight selected network</button><button class="btn small ghost" data-duct-action="clear-highlight">Clear duct highlighting</button></div>
-      <div class="toggle-grid"><label><input type="checkbox" data-duct-toggle="showOnly"> Show only highlighted system</label><label><input type="checkbox" data-duct-toggle="dimOthers"> Dim other systems</label></div>
-      <div class="button-row"><button class="btn small" data-duct-action="fit-highlighted">Fit highlighted</button><button class="btn small ghost" data-duct-action="hide-highlight">Hide highlighting</button></div>
-      <div id="ductHighlightFeedback" class="selection-feedback" aria-live="polite">No duct highlighting active.</div>
+      <p class="help">Highlight complete connected <b>Tulo-kanavisto</b> / <b>Poistokanavisto</b>, then click a network to see its measured lengths and parts.</p>
+      <div class="button-row duct-primary"><button class="btn primary duct-hl-tulo" data-duct-action="highlight-tulo">Highlight Tulo</button><button class="btn primary duct-hl-poisto" data-duct-action="highlight-poisto">Highlight Poisto</button></div>
+      <div class="button-row"><button class="btn small" data-duct-action="rescan">Rescan drawing</button><button class="btn small" data-duct-action="review-uncertain">Review uncertain connections</button></div>
+      <div class="button-row"><button class="btn small" data-duct-action="fit-highlighted">Fit highlighted</button><button class="btn small ghost" data-duct-action="clear-highlight">Clear highlight</button></div>
+      <div class="toggle-grid"><label><input type="checkbox" data-duct-toggle="showOnly"> Show highlighted only</label><label><input type="checkbox" data-duct-toggle="dimOthers"> Dim other systems</label><label><input type="checkbox" data-duct-view="showUR" checked> Show UR boundaries</label><label><input type="checkbox" data-duct-view="showSuggested" checked> Show suggested geometry</label><label><input type="checkbox" data-duct-view="showLabels" checked> Show labels</label><label><input type="checkbox" data-duct-view="verifiedOnly"> Verified only</label></div>
+      <div id="ductHighlightFeedback" class="selection-feedback" aria-live="polite">Highlight Tulo or Poisto to begin.</div>
       <div class="duct-legend" aria-label="Duct system legend"><span class="tulo">━ Tulo / Supply</span><span class="poisto">┅ Poisto / Extract</span><span class="verified">solid = Verified</span><span class="suggested">dashed = Suggested</span></div>
-      <h3>Create / trace a system</h3>
-      <label class="field"><span class="label">New system type</span><select id="ductSeedSystem" class="select">${SYSTEM_OPTIONS.map((option) => `<option value="${option.value}"${option.value === 'supply' ? ' selected' : ''}>${option.label}</option>`).join('')}</select></label>
-      <label class="field"><span class="label">Duct size for new segment</span><input id="ductSize" class="input" value="500x200" placeholder="500x200 or Ø160"></label>
-      <div class="button-row"><button class="btn primary small" data-duct-action="select-system">Select duct system (click seed)</button><button class="btn small" data-duct-action="load-demo">Load demo system</button></div>
-      <div class="button-row"><button class="btn small" data-duct-action="trace-segment">Trace centreline</button><button class="btn small" data-duct-action="auto-fittings">Auto-detect fittings</button></div>
-      <div id="ductSeedInstructions" class="callout hidden"></div>
+      <details class="duct-advanced"><summary>Correction tools (advanced)</summary>
+        <label class="field"><span class="label">System type for new network</span><select id="ductSeedSystem" class="select">${SYSTEM_OPTIONS.map((option) => `<option value="${option.value}"${option.value === 'supply' ? ' selected' : ''}>${option.label}</option>`).join('')}</select></label>
+        <label class="field"><span class="label">Duct size for new / corrected segment</span><input id="ductSize" class="input" value="500x200" placeholder="500x200 or Ø160"></label>
+        <div class="button-row"><button class="btn small" data-duct-action="select-system">Seed a network (click drawing)</button><button class="btn small" data-duct-action="load-demo">Load demo system</button></div>
+        <div id="ductSeedInstructions" class="callout hidden"></div>
+      </details>
     </div>`;
 
   const reviewPanel = document.createElement('section');
@@ -217,11 +221,11 @@ export function initDuctNetworkUi(context: DuctNetworkContext): DuctNetworkContr
     highlight.active = active; highlight.scope = active ? scope : 'none';
     highlight.selectedNetworkId = scope === 'selected' ? selectedNetworkId : highlight.selectedNetworkId;
     if (scope === 'tulo' || scope === 'poisto') {
-      const summary = highlightSummary(project(), scope);
+      const summary = highlightSummary(project(), scope, context.getPage());
       highlightFeedback.textContent = summary.text;
       highlightFeedback.classList.toggle('empty', summary.networks === 0);
       context.status(summary.text);
-      if (!summary.networks) context.toast(`No ${scope === 'tulo' ? 'Tulo' : 'Poisto'} networks to highlight`);
+      if (!summary.networks) context.toast(summary.text);
     } else if (scope === 'selected') {
       const network = selectedNetwork();
       highlightFeedback.textContent = network ? `Highlighting ${network.name}.` : 'Select a network to highlight it.';
@@ -237,6 +241,23 @@ export function initDuctNetworkUi(context: DuctNetworkContext): DuctNetworkContr
     const points = networks.flatMap((network) => networkSegments(project(), network).flatMap((segment) => segment.centrelinePoints));
     if (!points.length) { context.toast('Nothing highlighted to fit'); return; }
     context.fitToPoints(points);
+  }
+
+  function fitNetwork(): void {
+    const network = selectedNetwork(); if (!network) return;
+    const points = networkSegments(project(), network).flatMap((segment) => segment.centrelinePoints);
+    if (points.length) context.fitToPoints(points);
+  }
+
+  function cycleNetwork(direction: 1 | -1): void {
+    const page = context.getPage();
+    const onPage = project().ductNetworks.filter((network) => network.pageNumber === page);
+    if (!onPage.length) return;
+    const index = onPage.findIndex((network) => network.id === selectedNetworkId);
+    const next = onPage[(index + direction + onPage.length) % onPage.length] ?? onPage[0];
+    selectedNetworkId = next.id; selectedSegmentId = null; selectedNodeId = null; selectedBoundaryId = null;
+    project().ductHighlight.selectedNetworkId = next.id;
+    fitNetwork(); context.markChanged();
   }
 
   function verifyNetwork(): void {
@@ -305,9 +326,58 @@ export function initDuctNetworkUi(context: DuctNetworkContext): DuctNetworkContr
     project().ductSegments.push(...fixture.segments);
     project().ductNodes.push(...fixture.nodes);
     project().ductLabels.push(...fixture.labels);
+    project().contractBoundaries.push(...fixture.boundaries);
     selectedNetworkId = fixture.network.id; selectedSegmentId = null; selectedNodeId = null;
     context.markChanged(); context.toast('Demo Tulo duct system loaded');
     context.fitToPoints(fixture.segments.flatMap((segment) => segment.centrelinePoints));
+  }
+
+  function rescan(): void {
+    if (!context.hasPdf() && !project().routes.length && !project().ductNetworks.length) { context.toast('Upload a PDF or load the demo first'); return; }
+    const result = autoDetectNetworks(project(), context.getPage(), context.getMmPerPdfPoint());
+    if (result.networks) {
+      context.markChanged();
+      context.toast(`Rescan: ${result.networks} network(s) from ${result.convertedRoutes} traced route(s)`);
+      context.status(`Rescan detected ${result.networks} network(s), ${result.segments} section(s) from existing traced routes on this page.`);
+    } else if (project().ductNetworks.some((network) => network.pageNumber === context.getPage())) {
+      context.status('Rescan complete. Existing networks are up to date; use the correction tools to add or fix sections.');
+      context.toast('Rescan complete — existing networks kept');
+    } else {
+      context.status('Rescan found no traced routes or detectable networks on this page. Seed a network or load the demo.');
+      context.toast('No detectable networks on this page');
+    }
+  }
+
+  function reviewUncertain(): void {
+    const page = context.getPage();
+    const uncertain = project().ductNodes.filter((node) => node.pageNumber === page && (node.type === 'unknown' || (node.type === 'end' && node.verificationStatus === 'suggested')));
+    const boundaries = project().contractBoundaries.filter((boundary) => boundary.pageNumber === page && boundary.scopeSide === 'unknown');
+    if (!uncertain.length && !boundaries.length) { context.status('No uncertain connections or undecided UR boundaries on this page.'); context.toast('No uncertain connections to review'); return; }
+    const target = uncertain[0]?.point ?? boundaries[0]?.point;
+    if (uncertain[0]) { selectedNodeId = uncertain[0].id; selectedNetworkId = uncertain[0].networkId ?? selectedNetworkId; }
+    else if (boundaries[0]) { selectedBoundaryId = boundaries[0].id; selectedNetworkId = boundaries[0].relatedNetworkId ?? selectedNetworkId; }
+    if (target) context.fitToPoints([target]);
+    context.status(`${uncertain.length} uncertain connection(s) and ${boundaries.length} undecided UR boundary(ies) to review.`);
+    context.markChanged();
+  }
+
+  function markUR(): void {
+    const network = selectedNetwork(); const segment = selectedSegment();
+    if (!network) { context.toast('Select a network first'); return; }
+    const point = segment ? segment.centrelinePoints[segment.centrelinePoints.length - 1] : selectedNode()?.point;
+    if (!point) { context.toast('Select a segment or fitting where the UR boundary sits'); return; }
+    const boundary = createContractBoundary(network.pageNumber, point, network.id, segment?.id);
+    boundary.verificationStatus = 'verified';
+    project().contractBoundaries.push(boundary); selectedBoundaryId = boundary.id;
+    context.markChanged(); context.toast('UR / urakkaraja boundary added — set the project side');
+  }
+
+  function setProjectSide(boundaryId: string, side: ContractScopeSide): void {
+    const boundary = project().contractBoundaries.find((item) => item.id === boundaryId); if (!boundary) return;
+    boundary.scopeSide = side; boundary.verificationStatus = 'verified';
+    context.markChanged();
+    const message = side === 'both' ? 'Counting both sides of UR.' : side === 'unknown' ? 'UR left undecided.' : `Counting ${side} the UR boundary; the other side is excluded.`;
+    context.toast(message);
   }
 
   function highlightedNetworks(): DuctNetwork[] {
@@ -333,6 +403,7 @@ export function initDuctNetworkUi(context: DuctNetworkContext): DuctNetworkContr
     const data = project();
     byId('ductNetCount').textContent = `${data.ductNetworks.length} network${data.ductNetworks.length === 1 ? '' : 's'}`;
     controlPanel.querySelectorAll<HTMLInputElement>('[data-duct-toggle]').forEach((input) => { input.checked = Boolean(data.ductHighlight[input.dataset.ductToggle as 'showOnly' | 'dimOthers']); });
+    controlPanel.querySelectorAll<HTMLInputElement>('[data-duct-view]').forEach((input) => { input.checked = Boolean(view[input.dataset.ductView as keyof typeof view]); });
 
     const list = byId<HTMLDivElement>('ductNetworkList');
     const networks = data.ductNetworks;
@@ -351,25 +422,47 @@ export function initDuctNetworkUi(context: DuctNetworkContext): DuctNetworkContr
   function renderEditor(): void {
     const editor = byId<HTMLDivElement>('ductSelectedEditor');
     const network = selectedNetwork();
-    if (!network) { editor.innerHTML = ''; return; }
+    if (!network) { editor.innerHTML = '<div class="empty-mini">Highlight Tulo or Poisto, then click a highlighted network to inspect its lengths and parts.</div>'; return; }
     const segment = selectedSegment(); const node = selectedNode();
     const segments = networkSegments(project(), network);
     const nodes = networkNodes(project(), network);
+    const counts = networkCounts(project(), network);
+    const boundaries = boundariesForNetwork(project(), network);
+    const kind = network.systemType === 'supply' ? 'tulo' : (network.systemType === 'extract' || network.systemType === 'exhaust') ? 'poisto' : 'other';
+    const labelSummary = project().ductLabels.filter((label) => network.segmentIds.includes(label.segmentId ?? '') || network.nodeIds.includes(label.nodeId ?? '')).map((label) => label.normalized);
     editor.innerHTML = `
-      <div class="duct-editor-head"><b>${escapeHtml(network.name)}</b><span>${escapeHtml(systemTypeToLabel(network.systemType))} · ${network.source}</span></div>
-      <label class="field"><span class="label">System type</span><select data-duct-system class="select">${SYSTEM_OPTIONS.filter((option) => option.value !== 'infer').map((option) => `<option value="${option.value}"${option.value === network.systemType ? ' selected' : ''}>${option.label}</option>`).join('')}</select></label>
-      <div class="button-row"><button class="btn small" data-duct-action="add-segment">Add segment</button><button class="btn small" data-duct-action="auto-fittings">Auto-detect fittings</button><button class="btn small" data-duct-action="verify-network">Verify network</button></div>
-      <div class="button-row"><button class="btn small ghost danger" data-duct-action="delete-network">Delete network</button></div>
-      <div class="duct-subitems">
-        <div class="duct-subhead">Segments (${segments.length})</div>
-        ${segments.map((item) => `<button class="duct-chip ${item.id === selectedSegmentId ? 'active' : ''}" data-duct-segment="${item.id}">${escapeHtml(profileLabel(item.profile))} · ${(item.lengthMm / 1000).toFixed(2)} m · ${item.verificationStatus}</button>`).join('') || '<span class="empty-mini">No segments.</span>'}
-        <div class="duct-subhead">Fittings (${nodes.length})</div>
-        ${nodes.map((item) => `<button class="duct-chip ${item.id === selectedNodeId ? 'active' : ''}" data-duct-node="${item.id}">${escapeHtml(nodeLabel(item))}</button>`).join('') || '<span class="empty-mini">No fittings.</span>'}
+      <div class="duct-editor-head"><b>${escapeHtml(network.name)}</b><span>${escapeHtml(systemTypeToLabel(network.systemType))} · ${network.verificationStatus} · ${network.source}</span></div>
+      <div class="duct-counts">
+        <div><b>${counts.lengthM.toFixed(2)} m</b><span>Horizontal</span></div>
+        <div><b>${counts.verticalConfirmedM.toFixed(2)} m</b><span>Vertical (conf.)</span></div>
+        <div><b>${counts.segments}</b><span>Sections</span></div>
+        <div><b>${counts.bends}</b><span>Bends</span></div>
+        <div><b>${counts.transitions}</b><span>Muunto</span></div>
+        <div><b>${counts.branches}</b><span>Branches</span></div>
+        <div><b>${counts.terminals}</b><span>Terminals</span></div>
+        <div><b>${counts.ur}</b><span>UR</span></div>
+        <div class="${counts.unresolved ? 'warn' : ''}"><b>${counts.unresolved}</b><span>Unresolved</span></div>
       </div>
-      ${segment ? `<div class="duct-tool-row"><button class="btn small" data-duct-action="set-size">Set duct size (${escapeHtml(sizeInput.value)})</button><button class="btn small ghost danger" data-duct-action="remove-segment">Delete segment</button></div>` : ''}
-      <div class="duct-tool-row"><button class="btn small" data-duct-action="mark-bend">Mark bend</button><button class="btn small" data-duct-action="mark-branch">Mark branch</button><button class="btn small" data-duct-action="mark-transition">Mark transition (Muunto)</button></div>
-      <div class="duct-tool-row"><button class="btn small" data-duct-action="mark-ylos">Mark YLÖS</button><button class="btn small" data-duct-action="mark-alas">Mark ALAS</button><button class="btn small ghost" data-duct-action="remove-node">Break / remove fitting</button></div>
-      ${node && node.type === 'continuation' ? `<div class="duct-tool-row"><button class="btn small" data-duct-action="vertical-length">${node.confirmedVerticalLength ? `Vertical length ${node.verticalLengthMm} mm ✓` : 'Enter vertical length…'}</button></div><p class="help">${node.confirmedVerticalLength ? 'Confirmed vertical length is counted as duct.' : 'No vertical length shown — not counted until you confirm one.'}</p>` : ''}`;
+      ${labelSummary.length ? `<div class="duct-labels-line">Labels: ${labelSummary.map((text) => `<span>${escapeHtml(text)}</span>`).join(' ')}</div>` : ''}
+      <div class="button-row"><button class="btn small ${kind === 'tulo' ? 'primary' : ''}" data-duct-action="highlight-selected">Highlight this</button><button class="btn small" data-duct-action="fit-network">Fit network</button><button class="btn small" data-duct-action="verify-network">Verify</button></div>
+      <div class="button-row"><button class="btn small ghost" data-duct-action="prev-network">◀ Prev</button><button class="btn small ghost" data-duct-action="next-network">Next ▶</button><button class="btn small ghost danger" data-duct-action="delete-network">Delete</button></div>
+      <label class="field"><span class="label">Change system (Tulo / Poisto)</span><select data-duct-system class="select">${SYSTEM_OPTIONS.filter((option) => option.value !== 'infer').map((option) => `<option value="${option.value}"${option.value === network.systemType ? ' selected' : ''}>${option.label}</option>`).join('')}</select></label>
+      ${boundaries.length ? `<div class="duct-ur-block"><div class="duct-subhead">UR contract boundaries</div>${boundaries.map((boundary) => `<div class="duct-ur-row"><span>${escapeHtml(boundary.notes || 'UR boundary')} · <b>${boundary.scopeSide}</b></span><select data-duct-scope="${boundary.id}" class="select compact"><option value="unknown"${boundary.scopeSide === 'unknown' ? ' selected' : ''}>Undecided</option><option value="after"${boundary.scopeSide === 'after' ? ' selected' : ''}>Count after UR</option><option value="before"${boundary.scopeSide === 'before' ? ' selected' : ''}>Count before UR</option><option value="both"${boundary.scopeSide === 'both' ? ' selected' : ''}>Count both</option></select></div>`).join('')}</div>` : ''}
+      <details class="duct-advanced"><summary>Correct this network</summary>
+        <div class="duct-subitems">
+          <div class="duct-subhead">Sections (${segments.length})</div>
+          ${segments.map((item) => `<button class="duct-chip ${item.id === selectedSegmentId ? 'active' : ''}" data-duct-segment="${item.id}">${escapeHtml(profileLabel(item.profile))} · ${(item.lengthMm / 1000).toFixed(2)} m · ${item.verificationStatus}</button>`).join('') || '<span class="empty-mini">No sections.</span>'}
+          <div class="duct-subhead">Fittings (${nodes.length})</div>
+          ${nodes.map((item) => `<button class="duct-chip ${item.id === selectedNodeId ? 'active' : ''}" data-duct-node="${item.id}">${escapeHtml(nodeLabel(item))}</button>`).join('') || '<span class="empty-mini">No fittings.</span>'}
+        </div>
+        <div class="duct-tool-row"><button class="btn small" data-duct-action="add-segment">Add missing section</button><button class="btn small" data-duct-action="auto-fittings">Auto-detect fittings</button></div>
+        ${segment ? `<div class="duct-tool-row"><button class="btn small" data-duct-action="set-size">Set size (${escapeHtml(sizeInput.value)})</button><button class="btn small ghost danger" data-duct-action="remove-segment">Remove section</button></div>` : ''}
+        <div class="duct-tool-row"><button class="btn small" data-duct-action="mark-bend">Mark bend</button><button class="btn small" data-duct-action="mark-branch">Mark branch</button><button class="btn small" data-duct-action="mark-transition">Mark Muunto</button></div>
+        <div class="duct-tool-row"><button class="btn small" data-duct-action="mark-terminal">Mark terminal</button><button class="btn small" data-duct-action="mark-ylos">Mark YLÖS</button><button class="btn small" data-duct-action="mark-alas">Mark ALAS</button></div>
+        <div class="duct-tool-row"><button class="btn small" data-duct-action="mark-ur">Mark UR</button><button class="btn small ghost" data-duct-action="remove-node">Break connection</button></div>
+        ${node && node.type === 'continuation' ? `<div class="duct-tool-row"><button class="btn small" data-duct-action="vertical-length">${node.confirmedVerticalLength ? `Vertical ${node.verticalLengthMm} mm ✓` : 'Enter vertical length…'}</button></div><p class="help">${node.confirmedVerticalLength ? 'Confirmed vertical length is counted.' : 'No vertical length shown — not counted until confirmed.'}</p>` : ''}
+        <label class="field"><span class="label">Notes</span><input class="input" data-duct-notes value="${escapeHtml(network.notes)}" placeholder="Network notes"></label>
+      </details>`;
   }
 
   function nodeLabel(node: DuctNode): string {
@@ -403,11 +496,13 @@ export function initDuctNetworkUi(context: DuctNetworkContext): DuctNetworkContr
     const data = project(); const page = context.getPage(); const highlight = data.ductHighlight;
     const highlighted = new Set(highlightedNetworks().map((network) => network.id));
     data.ductNetworks.filter((network) => network.pageNumber === page).forEach((network) => {
+      if (view.verifiedOnly && network.verificationStatus !== 'verified') return;
       const isHighlighted = !highlight.active || highlighted.has(network.id);
       if (highlight.active && highlight.showOnly && !isHighlighted) return;
       const dim = highlight.active && highlight.dimOthers && !isHighlighted;
       drawNetwork(context2d, renderScale, network, dim);
     });
+    if (view.showUR) data.contractBoundaries.filter((boundary) => boundary.pageNumber === page).forEach((boundary) => drawBoundary(context2d, renderScale, boundary));
     // Manual trace draft
     if (traceDraft.length) {
       context2d.save(); context2d.strokeStyle = '#8ee3c2'; context2d.lineWidth = 3; context2d.setLineDash([8, 6]); context2d.beginPath();
@@ -422,24 +517,27 @@ export function initDuctNetworkUi(context: DuctNetworkContext): DuctNetworkContr
     const selected = network.id === selectedNetworkId;
     const alpha = dim ? 0.22 : 1;
     const extract = network.systemType === 'extract' || network.systemType === 'exhaust';
+    const excluded = excludedSegmentIds(project(), network);
     networkSegments(project(), network).forEach((segment) => {
+      if (!view.showSuggested && segment.verificationStatus === 'suggested' && !verified) return;
       const points = segment.centrelinePoints; if (points.length < 2) return;
+      const outOfScope = excluded.has(segment.id);
       const segSelected = segment.id === selectedSegmentId;
-      context2d.save(); context2d.globalAlpha = alpha;
+      context2d.save(); context2d.globalAlpha = outOfScope ? alpha * 0.4 : alpha;
       // Halo
       context2d.beginPath(); points.forEach((point, index) => index ? context2d.lineTo(point.x * renderScale, point.y * renderScale) : context2d.moveTo(point.x * renderScale, point.y * renderScale));
       context2d.strokeStyle = 'rgba(3,10,16,.75)'; context2d.lineWidth = (segSelected ? 12 : 9); context2d.lineJoin = 'round'; context2d.lineCap = 'round'; context2d.stroke();
       // Main stroke: solid when verified, dashed when suggested; extract uses a distinct dash pattern.
       context2d.beginPath(); points.forEach((point, index) => index ? context2d.lineTo(point.x * renderScale, point.y * renderScale) : context2d.moveTo(point.x * renderScale, point.y * renderScale));
-      context2d.strokeStyle = segSelected ? '#ffe08a' : selected ? '#ffffff' : color; context2d.lineWidth = segSelected ? 6 : 4;
-      context2d.setLineDash(verified ? (extract ? [] : []) : extract ? [10, 6] : [6, 5]);
-      if (extract && verified) context2d.setLineDash([14, 4, 3, 4]);
+      context2d.strokeStyle = outOfScope ? '#8fa1b3' : segSelected ? '#ffe08a' : selected ? '#ffffff' : color; context2d.lineWidth = segSelected ? 6 : 4;
+      context2d.setLineDash(outOfScope ? [3, 4] : verified ? (extract ? [] : []) : extract ? [10, 6] : [6, 5]);
+      if (extract && verified && !outOfScope) context2d.setLineDash([14, 4, 3, 4]);
       context2d.stroke(); context2d.restore();
     });
     networkNodes(project(), network).forEach((node) => drawNode(context2d, renderScale, node, color, alpha));
-    // Network badge at first segment midpoint.
-    const first = networkSegments(project(), network)[0];
-    if (first && first.centrelinePoints.length) {
+    // Network badge at first in-scope segment midpoint.
+    const first = networkSegments(project(), network).find((segment) => !excluded.has(segment.id)) ?? networkSegments(project(), network)[0];
+    if (view.showLabels && first && first.centrelinePoints.length) {
       const anchor = first.centrelinePoints[Math.floor(first.centrelinePoints.length / 2)];
       context2d.save(); context2d.globalAlpha = alpha; context2d.font = '700 11px system-ui';
       const text = `${network.systemType === 'supply' ? 'Tulo' : extract ? 'Poisto' : 'Muu'} · ${network.name}`;
@@ -467,6 +565,18 @@ export function initDuctNetworkUi(context: DuctNetworkContext): DuctNetworkContr
     context2d.restore();
   }
 
+  function drawBoundary(context2d: CanvasRenderingContext2D, renderScale: number, boundary: ContractBoundary): void {
+    const x = boundary.point.x * renderScale; const y = boundary.point.y * renderScale;
+    const active = boundary.id === selectedBoundaryId;
+    context2d.save();
+    context2d.strokeStyle = active ? '#ffe08a' : '#ff5d6c'; context2d.lineWidth = active ? 4 : 3; context2d.setLineDash([]);
+    context2d.beginPath(); context2d.moveTo(x, y - 12); context2d.lineTo(x, y + 12); context2d.stroke();
+    context2d.setLineDash([3, 3]); context2d.beginPath(); context2d.moveTo(x - 12, y - 12); context2d.lineTo(x + 12, y + 12); context2d.moveTo(x + 12, y - 12); context2d.lineTo(x - 12, y + 12); context2d.stroke();
+    context2d.setLineDash([]); context2d.font = '700 11px system-ui';
+    context2d.fillStyle = 'rgba(6,14,22,.9)'; context2d.fillRect(x + 10, y - 20, 26, 16); context2d.fillStyle = '#ff8f9a'; context2d.fillText('UR', x + 14, y - 8);
+    context2d.restore();
+  }
+
   // --- Hit testing --------------------------------------------------------
   function distanceToPolyline(point: Point, points: Point[]): number {
     let best = Infinity;
@@ -481,11 +591,13 @@ export function initDuctNetworkUi(context: DuctNetworkContext): DuctNetworkContr
 
   function hitTest(point: Point, renderScale: number): boolean {
     const page = context.getPage(); const threshold = 10 / renderScale;
-    // Prefer nodes, then segments.
+    // Prefer UR boundaries, then fitting nodes, then segments/networks.
+    const boundary = project().contractBoundaries.filter((item) => item.pageNumber === page).find((item) => Math.hypot(item.point.x - point.x, item.point.y - point.y) <= 14 / renderScale);
+    if (boundary) { selectedBoundaryId = boundary.id; selectedNetworkId = boundary.relatedNetworkId ?? selectedNetworkId; selectedSegmentId = null; selectedNodeId = null; context.markChanged(); return true; }
     const node = project().ductNodes.filter((item) => item.pageNumber === page).find((item) => Math.hypot(item.point.x - point.x, item.point.y - point.y) <= 12 / renderScale);
-    if (node) { selectedNodeId = node.id; selectedNetworkId = node.networkId ?? selectedNetworkId; selectedSegmentId = null; context.markChanged(); return true; }
+    if (node) { selectedNodeId = node.id; selectedNetworkId = node.networkId ?? selectedNetworkId; selectedSegmentId = null; selectedBoundaryId = null; context.markChanged(); return true; }
     const segment = project().ductSegments.filter((item) => item.pageNumber === page).find((item) => item.centrelinePoints.length >= 2 && distanceToPolyline(point, item.centrelinePoints) <= threshold);
-    if (segment) { selectedSegmentId = segment.id; selectedNetworkId = networkForSegment(project(), segment.id)?.id ?? selectedNetworkId; selectedNodeId = null; context.markChanged(); return true; }
+    if (segment) { selectedSegmentId = segment.id; selectedNetworkId = networkForSegment(project(), segment.id)?.id ?? selectedNetworkId; selectedNodeId = null; selectedBoundaryId = null; project().ductHighlight.selectedNetworkId = selectedNetworkId; context.markChanged(); return true; }
     return false;
   }
 
@@ -497,6 +609,13 @@ export function initDuctNetworkUi(context: DuctNetworkContext): DuctNetworkContr
       case 'highlight-selected': setHighlight('selected', true); break;
       case 'clear-highlight': case 'hide-highlight': setHighlight('none', false); break;
       case 'fit-highlighted': fitHighlighted(); break;
+      case 'fit-network': fitNetwork(); break;
+      case 'prev-network': cycleNetwork(-1); break;
+      case 'next-network': cycleNetwork(1); break;
+      case 'rescan': rescan(); break;
+      case 'review-uncertain': reviewUncertain(); break;
+      case 'mark-ur': markUR(); break;
+      case 'mark-terminal': markNode('terminal'); break;
       case 'select-system': beginSeed(); break;
       case 'trace-segment': case 'add-segment': beginTrace(); break;
       case 'auto-fittings': { const network = selectedNetwork(); if (network) { reindexNodes(network); context.markChanged(); context.toast('Fittings re-detected (suggested)'); } else context.toast('Select a network first'); break; }
@@ -543,8 +662,14 @@ export function initDuctNetworkUi(context: DuctNetworkContext): DuctNetworkContr
     const target = event.target as HTMLElement;
     const systemSelect = target.closest<HTMLSelectElement>('[data-duct-system]');
     if (systemSelect) { changeSystemType(systemSelect.value as DuctSystemType); return; }
+    const scopeSelect = target.closest<HTMLSelectElement>('[data-duct-scope]');
+    if (scopeSelect) { setProjectSide(scopeSelect.dataset.ductScope ?? '', scopeSelect.value as ContractScopeSide); return; }
     const toggle = target.closest<HTMLInputElement>('[data-duct-toggle]');
     if (toggle) { const key = toggle.dataset.ductToggle as 'showOnly' | 'dimOthers'; project().ductHighlight[key] = toggle.checked; context.markChanged(); return; }
+    const viewToggle = target.closest<HTMLInputElement>('[data-duct-view]');
+    if (viewToggle) { const key = viewToggle.dataset.ductView as keyof typeof view; view[key] = viewToggle.checked; context.requestOverlay(); return; }
+    const notesInput = target.closest<HTMLInputElement>('[data-duct-notes]');
+    if (notesInput) { const network = selectedNetwork(); if (network) { network.notes = notesInput.value; touch(network); context.markChanged(); } return; }
     const catalogue = target.closest<HTMLInputElement>('[data-duct-catalogue]');
     if (catalogue) {
       const id = catalogue.dataset.ductCatalogue ?? ''; const disabled = !catalogue.checked;
@@ -566,7 +691,7 @@ export function initDuctNetworkUi(context: DuctNetworkContext): DuctNetworkContr
     handleToolChange(tool: Tool) { if (tool !== 'network-trace') { if (traceDraft.length && tool !== 'network-seed') traceDraft = []; } if (tool !== 'network-seed' && tool !== 'network-trace') seedInstructions.classList.add('hidden'); if (tracing && tool === 'pan') progressCancelled = true; },
     hitTest,
     getTraceDraft() { return traceDraft; },
-    clearTransient() { traceDraft = []; selectedSegmentId = null; selectedNodeId = null; },
+    clearTransient() { traceDraft = []; selectedSegmentId = null; selectedNodeId = null; selectedBoundaryId = null; },
   };
 }
 
@@ -576,6 +701,7 @@ export function ensureDuctDefaults(project: ProjectData): void {
   project.ductNodes ??= [];
   project.ductLabels ??= [];
   project.ductPartMappings ??= [];
+  project.contractBoundaries ??= [];
   project.customCatalogue ??= [];
   project.disabledCatalogueIds ??= [];
   project.ductHighlight ??= { active: false, scope: 'none', showOnly: false, dimOthers: false, selectedNetworkId: null };

@@ -2,8 +2,8 @@ import { syncCustomPartAssembly } from './custom-part-assembly';
 import type { CustomPart } from './types';
 import type { ProjectData } from './types';
 
-export const STORAGE_KEY = 'hvac-parts-counter-project-v6';
-const LEGACY_KEYS = ['hvac-parts-counter-project-v5', 'hvac-parts-counter-project-v4', 'hvac-parts-counter-project-v3', 'hvac-parts-counter-project-v2'];
+export const STORAGE_KEY = 'hvac-parts-counter-project-v7';
+const LEGACY_KEYS = ['hvac-parts-counter-project-v6', 'hvac-parts-counter-project-v5', 'hvac-parts-counter-project-v4', 'hvac-parts-counter-project-v3', 'hvac-parts-counter-project-v2'];
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
@@ -102,18 +102,25 @@ function airflowDefaults(): Pick<ProjectData, 'airflowMarkers' | 'temporaryDuctA
   return { airflowMarkers: [], temporaryDuctAxes: [], airflowVisibility: { showSupply: true, showExtract: true, showUncertain: true, verifiedOnly: false, showLabels: true, showVectors: true } };
 }
 
-function ductDefaults(): Pick<ProjectData, 'ductNetworks' | 'ductSegments' | 'ductNodes' | 'ductLabels' | 'ductPartMappings' | 'customCatalogue' | 'disabledCatalogueIds' | 'ductHighlight'> {
-  return { ductNetworks: [], ductSegments: [], ductNodes: [], ductLabels: [], ductPartMappings: [], customCatalogue: [], disabledCatalogueIds: [], ductHighlight: { active: false, scope: 'none', showOnly: false, dimOthers: false, selectedNetworkId: null } };
+function ductDefaults(): Pick<ProjectData, 'ductNetworks' | 'ductSegments' | 'ductNodes' | 'ductLabels' | 'ductPartMappings' | 'contractBoundaries' | 'customCatalogue' | 'disabledCatalogueIds' | 'ductHighlight'> {
+  return { ductNetworks: [], ductSegments: [], ductNodes: [], ductLabels: [], ductPartMappings: [], contractBoundaries: [], customCatalogue: [], disabledCatalogueIds: [], ductHighlight: { active: false, scope: 'none', showOnly: false, dimOthers: false, selectedNetworkId: null } };
+}
+
+function pickDuctArrays(value: Record<string, unknown>): Record<string, unknown> {
+  const keys = ['ductNetworks', 'ductSegments', 'ductNodes', 'ductLabels', 'ductPartMappings', 'customCatalogue', 'disabledCatalogueIds', 'ductHighlight'];
+  const result: Record<string, unknown> = {};
+  keys.forEach((key) => { if (value[key] !== undefined) result[key] = value[key]; });
+  return result;
 }
 
 function isDuctShape(value: Record<string, unknown>): boolean {
   return Array.isArray(value.ductNetworks) && Array.isArray(value.ductSegments) && Array.isArray(value.ductNodes)
-    && Array.isArray(value.ductLabels) && Array.isArray(value.ductPartMappings) && Array.isArray(value.customCatalogue)
-    && Array.isArray(value.disabledCatalogueIds) && isRecord(value.ductHighlight);
+    && Array.isArray(value.ductLabels) && Array.isArray(value.ductPartMappings) && Array.isArray(value.contractBoundaries)
+    && Array.isArray(value.customCatalogue) && Array.isArray(value.disabledCatalogueIds) && isRecord(value.ductHighlight);
 }
 
 function isValidProject(value: unknown): value is ProjectData {
-  if (!isRecord(value) || value.version !== 6) return false;
+  if (!isRecord(value) || value.version !== 7) return false;
   if (!isDuctShape(value)) return false;
   const calibration = value.calibration;
   const drawing = value.drawing;
@@ -181,17 +188,22 @@ export function loadProject(): ProjectData | null {
   if (!raw) return null;
   try {
     const value: unknown = JSON.parse(raw);
-    if (isRecord(value) && (value.version === 2 || value.version === 3 || value.version === 4 || value.version === 5)) {
+    if (isRecord(value) && (value.version === 2 || value.version === 3 || value.version === 4 || value.version === 5 || value.version === 6)) {
       const legacyCustomParts = value.version < 5;
       const customParts = legacyCustomParts
         ? (Array.isArray(value.customParts) ? value.customParts.map(migrateCustomPart).filter((part): part is CustomPart => Boolean(part)) : [])
         : value.customParts;
+      // Carry any duct arrays already present (v6) forward; add missing defaults for older versions.
+      const defaults = ductDefaults();
+      const carriedDuct = value.version === 6
+        ? { ...defaults, ...pickDuctArrays(value), contractBoundaries: Array.isArray(value.contractBoundaries) ? value.contractBoundaries : [] }
+        : defaults;
       const migrated: unknown = {
         ...value,
-        version: 6,
+        version: 7,
         customParts,
         ...(value.version === 2 || value.version === 3 ? airflowDefaults() : {}),
-        ...ductDefaults(),
+        ...carriedDuct,
       };
       if (isValidProject(migrated)) return migrated;
     }

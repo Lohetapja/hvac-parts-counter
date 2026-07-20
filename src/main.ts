@@ -19,17 +19,20 @@ const SYSTEMS = ['Supply air', 'Extract air', 'Outdoor air', 'Exhaust air', 'Tra
 const PART_CATEGORIES = ['Bend 15°', 'Bend 30°', 'Bend 45°', 'Bend 90°', 'Tee', 'Branch', 'Reducer', 'Enlargement', 'End cap', 'Damper', 'Fire damper', 'Silencer', 'Flexible connector', 'Vertical rise', 'Vertical drop', 'Air terminal/device', 'Custom item'];
 const DEVICE_CATEGORIES = new Set(['Air terminal/device']);
 const MAX_CANVAS_PIXELS = 18_000_000;
+// Individual airflow arrows are internal classification evidence only; they are no
+// longer a user-facing workflow, so they are not drawn unless debugging.
+const SHOW_AIRFLOW_DEBUG = false;
 
 function now(): string { return new Date().toISOString(); }
 function uid(prefix: string): string { return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`; }
 function freshProject(): ProjectData {
   const timestamp = now();
   return {
-    version: 6, projectName: 'Tomorrow HVAC Takeoff', drawing: null, page: 1, scaleRatio: 50, customScaleRatio: 50,
+    version: 7, projectName: 'Tomorrow HVAC Takeoff', drawing: null, page: 1, scaleRatio: 50, customScaleRatio: 50,
     calibration: { mode: 'preset', mmPerPdfPoint: presetMmPerPdfPoint(50) }, routes: [], parts: [], customParts: [],
     airflowMarkers: [], temporaryDuctAxes: [], airflowVisibility: { showSupply: true, showExtract: true, showUncertain: true, verifiedOnly: false, showLabels: true, showVectors: true },
     rejectedDetectionIds: [],
-    ductNetworks: [], ductSegments: [], ductNodes: [], ductLabels: [], ductPartMappings: [], customCatalogue: [], disabledCatalogueIds: [],
+    ductNetworks: [], ductSegments: [], ductNodes: [], ductLabels: [], ductPartMappings: [], contractBoundaries: [], customCatalogue: [], disabledCatalogueIds: [],
     ductHighlight: { active: false, scope: 'none', showOnly: false, dimOthers: false, selectedNetworkId: null },
     createdAt: timestamp, updatedAt: timestamp,
   };
@@ -117,7 +120,7 @@ app.innerHTML = `
         <div id="calibrationInstructions" class="callout hidden">Calibration active: click the two endpoints of the known dimension. Escape cancels.</div>
         <div id="calibrationReadout" class="help"></div>
       </div></section>
-      <section class="panel"><div class="panel-header"><h2>Route</h2><span id="activeTool" class="badge">Pan</span></div><div class="panel-body">
+      <section class="panel hidden" data-legacy-workflow><div class="panel-header"><h2>Route</h2><span id="activeTool" class="badge">Pan</span></div><div class="panel-body">
         <label class="field"><span class="label">Shape</span><select id="ductShape" class="select"><option value="round">Round</option><option value="rectangular">Rectangular</option></select></label>
         <label class="field"><span class="label">Size</span><input id="ductSize" class="input" value="Ø200" placeholder="Ø200 or 400x300"></label>
         <label class="field"><span class="label">System</span><select id="ductSystem" class="select">${SYSTEMS.map((value) => `<option>${value}</option>`).join('')}</select></label>
@@ -126,7 +129,7 @@ app.innerHTML = `
         <p class="help">Click centreline points. Shift snaps to 45°/90°. Double-click or Enter finishes; Escape cancels.</p>
         <div id="selectionActions" class="button-row hidden"><button id="updateRouteBtn" class="btn">Update selected</button><button id="deleteRouteBtn" class="btn danger">Delete route</button></div>
       </div></section>
-      <section class="panel airflow-panel"><div class="panel-header"><h2>Airflow Points</h2><span id="airflowCount" class="badge muted">0 points</span></div><div class="panel-body">
+      <section class="panel airflow-panel hidden" data-legacy-workflow><div class="panel-header"><h2>Airflow Points</h2><span id="airflowCount" class="badge muted">0 points</span></div><div class="panel-body">
         <p class="help airflow-rule">Individual arrow markers (Tuloilmavirran / Poistoilmavirran nuolet). Separate from whole duct-system highlighting. Arrows pointing away from the duct are <b>Tulo / Supply</b>; toward the duct are <b>Poisto / Extract</b>.</p>
         <div class="button-row"><button id="markAirflowBtn" class="btn primary">Mark airflow arrow</button><button id="manualAirflowBtn" class="btn">Manual: 2 points</button></div>
         <div class="button-row"><button id="temporaryAxisBtn" class="btn">Select temporary duct axis</button><button id="scanSimilarBtn" class="btn" disabled>Find similar arrows</button><button id="cancelAirflowScanBtn" class="btn ghost hidden">Cancel scan</button></div>
@@ -152,7 +155,7 @@ app.innerHTML = `
       </div></section>
     </aside>
     <section class="viewer-column">
-      <div class="viewer-toolbar"><button class="tool active" data-tool="pan">Select / Pan</button><button class="tool" data-tool="calibrate">Scale</button><button class="tool" data-tool="trace">Trace duct</button><button class="tool" data-tool="airflow">Mark arrow</button><button class="tool" data-tool="label">Pick label</button><button class="tool" data-tool="network-seed">Duct system</button><i></i><button id="zoomOutBtn" class="tool">−</button><span id="zoomReadout" class="zoom-readout">Fit</span><button id="zoomInBtn" class="tool">+</button><button id="fitBtn" class="tool">Fit</button><i></i><button id="undoBtn" class="tool" disabled>Undo</button><button id="redoBtn" class="tool" disabled>Redo</button><div id="progress" class="progress"><span></span></div></div>
+      <div class="viewer-toolbar"><button class="tool active" data-tool="pan">Select / Pan</button><button class="tool" data-tool="calibrate">Scale</button><button class="tool" data-tool="network-seed">Duct system</button><button class="tool" data-tool="label">Pick label</button><i></i><button id="zoomOutBtn" class="tool">−</button><span id="zoomReadout" class="zoom-readout">Fit</span><button id="zoomInBtn" class="tool">+</button><button id="fitBtn" class="tool">Fit</button><i></i><button id="undoBtn" class="tool" disabled>Undo</button><button id="redoBtn" class="tool" disabled>Redo</button><div id="progress" class="progress"><span></span></div></div>
       <div id="viewerScroll" class="viewer-scroll"><div id="canvasStage" class="canvas-stage empty"><div id="emptyState" class="empty-state"><h2>Upload an HVAC PDF drawing</h2><p>The drawing stays in this browser. Saved takeoff data can be restored without storing the PDF.</p><button id="emptyUploadBtn" class="btn primary">Choose PDF</button></div><canvas id="pdfCanvas"></canvas><canvas id="overlayCanvas"></canvas></div></div>
       <div class="statusbar"><span id="statusText">Ready. Upload a PDF to begin.</span><span><strong>Private:</strong> no uploads, APIs, or tracking</span></div>
     </section>
@@ -162,7 +165,7 @@ app.innerHTML = `
         <h3>Duct groups</h3><div id="ductSummary" class="item-list"></div><h3>Parts & devices</h3><div id="partSummary" class="item-list"></div>
       </div></section>
       <section class="panel"><div class="panel-header"><h2>Detailed items</h2></div><div class="panel-body"><div id="detailList" class="item-list"></div></div></section>
-      <section class="panel airflow-review-panel"><div class="panel-header"><h2>Airflow review</h2><span id="airflowReviewCount" class="badge">0 shown</span></div><div class="panel-body">
+      <section class="panel airflow-review-panel hidden" data-legacy-workflow><div class="panel-header"><h2>Airflow review</h2><span id="airflowReviewCount" class="badge">0 shown</span></div><div class="panel-body">
         <div id="airflowTotals" class="airflow-totals" aria-live="polite"></div>
         <div class="inline"><label class="field"><span class="label">Filter</span><select id="airflowFilter" class="select"><option value="all">All</option><option value="supply">Tulo</option><option value="extract">Poisto</option><option value="uncertain">Uncertain</option><option value="suggested">Suggested</option><option value="verified">Verified</option></select></label><label class="field"><span class="label">Sort</span><select id="airflowSort" class="select"><option value="position">Page position</option><option value="classification">Classification</option><option value="confidence">Confidence</option><option value="duct">Related duct</option></select></label></div>
         <div class="button-row"><button id="verifyAirflowBtn" class="btn small" disabled>Verify selected</button><button id="flipAirflowBtn" class="btn small" disabled>Flip selected</button><button id="rejectAirflowBtn" class="btn small" disabled>Reject selected</button><button id="deleteAirflowBtn" class="btn small danger" disabled>Delete selected</button></div>
@@ -251,17 +254,16 @@ function deleteCustomPart(id: string): void {
 }
 
 function renderMaterialWorkspace(): void {
-  const measuredLength = project.routes.reduce((sum, route) => sum + routeLengthM(route, project), 0);
-  const airflowQuantity = project.airflowMarkers.filter((marker) => marker.verificationStatus !== 'rejected').length;
-  const standardQuantity = project.parts.reduce((sum, part) => sum + part.quantity, 0) + airflowQuantity;
+  const measuredLength = project.routes.reduce((sum, route) => sum + routeLengthM(route, project), 0)
+    + project.ductNetworks.reduce((sum, network) => sum + networkTotals(project, network).lengthM, 0);
+  const standardQuantity = project.parts.reduce((sum, part) => sum + part.quantity, 0);
   const customQuantity = project.customParts.reduce((sum, part) => sum + part.quantity, 0);
   els.materialNavCount.textContent = String(project.routes.length + standardQuantity + customQuantity);
   els.materialHeadline.innerHTML = `<div><b>${measuredLength.toFixed(2)} m</b><span>Measured duct</span></div><div><b>${project.routes.length}</b><span>Duct routes</span></div><div><b>${standardQuantity}</b><span>Standard items</span></div><div><b>${customQuantity}</b><span>Custom fittings</span></div>`;
   const routes = project.routes.map((route) => `<div class="material-card"><div><b>${escapeHtml(route.size)} duct</b><span>${escapeHtml(route.shape)} · ${escapeHtml(route.system)} · ${routeLengthM(route, project).toFixed(2)} m</span></div><strong>1×</strong></div>`);
   const parts = project.parts.map((part) => `<div class="material-card"><div><b>${escapeHtml(part.category)}${part.model ? ` · ${escapeHtml(part.model)}` : ''}</b><span>${escapeHtml(part.size || 'No size')} · ${escapeHtml(part.system)} · ${part.source}/${part.status}</span></div><strong>${part.quantity}×</strong></div>`);
-  const airflow = project.airflowMarkers.filter((marker) => marker.verificationStatus !== 'rejected').map((marker) => `<div class="material-card"><div><b>${escapeHtml(airflowLabel(marker.classification))}</b><span>${escapeHtml(marker.system ?? 'Unassigned')} · ${marker.verificationStatus} · Page ${marker.pageNumber}${marker.deviceModel ? ` · ${escapeHtml(marker.deviceModel)}` : ''}</span></div><strong>1×</strong></div>`);
   const ductSection = renderDuctMaterialGroups();
-  const standardBody = [...routes, ...parts, ...airflow].join('');
+  const standardBody = [...routes, ...parts].join('');
   els.materialStandardList.innerHTML = (ductSection || standardBody) ? `${ductSection}${standardBody || (ductSection ? '' : '<div class="empty-mini">No measured ducts, standard parts, or airflow points yet.</div>')}` : '<div class="empty-mini">No measured ducts, standard parts, or airflow points yet.</div>';
   els.materialCustomList.innerHTML = project.customParts.length ? project.customParts.map((part) => { const a = profileForEnd(part, 'a') === 'round' ? `Ø${part.endADiameterMm}` : `${part.endAWidthMm}×${part.endAHeightMm}`; const b = profileForEnd(part, 'b') === 'round' ? `Ø${part.endBDiameterMm}` : `${part.endBWidthMm}×${part.endBHeightMm}`; return `<article class="custom-material-card"><div class="custom-material-main"><span class="badge ${part.verificationStatus === 'suggested' ? 'warning' : ''}">${escapeHtml(part.verificationStatus)}</span><h3>${escapeHtml(part.name)}</h3><p>P1 ${a} → P2 ${b} mm · L${part.lengthMm} · X${part.horizontalOffsetMm > 0 ? '+' : ''}${part.horizontalOffsetMm} · Y${part.verticalOffsetMm > 0 ? '+' : ''}${part.verticalOffsetMm} · H${part.outletHorizontalAngleDeg}° / V${part.outletVerticalAngleDeg}°</p><small>${escapeHtml(part.partType)} · ${escapeHtml(part.system)} · ${escapeHtml(part.material)} · ${part.thicknessMm} mm · source: custom-builder</small></div><strong class="material-qty">${part.quantity}×</strong><div class="custom-material-actions"><button class="btn small" data-edit-custom="${part.id}">Open / edit</button><button class="btn small" data-pdf-custom="${part.id}">Drawing PDF</button><button class="btn small" data-duplicate-custom="${part.id}">Duplicate</button><button class="btn small ghost danger" data-delete-custom="${part.id}">Delete</button></div></article>`; }).join('') : '<div class="empty-state material-empty"><h2>No custom parts yet</h2><p>Build a rectangular, rectangular-to-round, or round-to-rectangular transition and keep its assembly parameters with this project.</p><button class="btn primary" data-new-custom>Open Custom Part Builder</button></div>';
 }
@@ -447,7 +449,7 @@ function drawOverlay(): void {
   });
   project.temporaryDuctAxes.filter((axis) => axis.pageNumber === project.page).forEach((axis) => drawPolyline(context, [axis.start, axis.end], '#b88cff', 3, true));
   if (selectedLabelModel) labelLocations.filter((location) => location.model === selectedLabelModel).forEach((location) => { context.save(); context.strokeStyle = location.id === selectedLabelId ? '#ffe08a' : '#9ef0c9'; context.lineWidth = location.id === selectedLabelId ? 4 : 2; context.setLineDash([6, 4]); context.strokeRect(location.x * renderScale - 4, location.y * renderScale - 4, Math.max(12, location.width * renderScale + 8), Math.max(12, location.height * renderScale + 8)); context.restore(); });
-  project.airflowMarkers.filter(visibleAirflow).forEach((marker) => {
+  if (SHOW_AIRFLOW_DEBUG) project.airflowMarkers.filter(visibleAirflow).forEach((marker) => {
     const selected = selectedAirflowIds.has(marker.id); const color = marker.classification === 'supply' ? '#52d6ff' : marker.classification === 'extract' ? '#ff9b6b' : '#ffd66b';
     const tail = { x: marker.tail.x * renderScale, y: marker.tail.y * renderScale }; const tip = { x: marker.tip.x * renderScale, y: marker.tip.y * renderScale }; const angle = Math.atan2(tip.y - tail.y, tip.x - tail.x);
     if (selected) { context.save(); context.beginPath(); context.arc(tip.x, tip.y, marker.id === focusedAirflowId ? 17 : 14, 0, Math.PI * 2); context.strokeStyle = marker.id === focusedAirflowId ? '#ffffff' : '#ff66da'; context.lineWidth = marker.id === focusedAirflowId ? 4 : 3; context.setLineDash([4, 3]); context.stroke(); context.restore(); }

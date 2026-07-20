@@ -1,5 +1,5 @@
 import type { Point } from './types';
-import type { DuctLabelAssociation, DuctNetwork, DuctNode, DuctProfile, DuctSegment } from './duct-network-types';
+import type { ContractBoundary, DuctLabelAssociation, DuctNetwork, DuctNode, DuctProfile, DuctSegment } from './duct-network-types';
 import { uid } from './duct-network';
 
 // Synthetic acceptance-test fixture. Represents the real drawing sequence:
@@ -14,7 +14,7 @@ const RECT_600_400: DuctProfile = { shape: 'rectangular', widthMm: 600, heightMm
 const RECT_500_400: DuctProfile = { shape: 'rectangular', widthMm: 500, heightMm: 400 };
 const ROUND_160: DuctProfile = { shape: 'round', diameterMm: 160 };
 
-export interface DuctFixture { network: DuctNetwork; segments: DuctSegment[]; nodes: DuctNode[]; labels: DuctLabelAssociation[]; }
+export interface DuctFixture { network: DuctNetwork; segments: DuctSegment[]; nodes: DuctNode[]; labels: DuctLabelAssociation[]; boundaries: ContractBoundary[]; }
 
 export function createDemoDuctNetwork(pageNumber: number): DuctFixture {
   const timestamp = new Date().toISOString();
@@ -26,6 +26,7 @@ export function createDemoDuctNetwork(pageNumber: number): DuctFixture {
   const segments: DuctSegment[] = [];
   const nodes: DuctNode[] = [];
   const labels: DuctLabelAssociation[] = [];
+  const boundaries: ContractBoundary[] = [];
 
   const seg = (points: Point[], profile: DuctProfile, lengthMm: number): DuctSegment => {
     const segment: DuctSegment = { id: uid('dseg'), pageNumber, networkId: network.id, profile, centrelinePoints: points, lengthMm, source: 'manual', verificationStatus: 'suggested', relatedLabelIds: [] };
@@ -44,6 +45,8 @@ export function createDemoDuctNetwork(pageNumber: number): DuctFixture {
   const sB = seg([{ x: 455, y: 180 }, { x: 455, y: 255 }], RECT_500_200, 1600);
   const sC = seg([{ x: 455, y: 300 }, { x: 600, y: 300 }], RECT_500_200, 3400);
   const sD = seg([{ x: 640, y: 300 }, { x: 900, y: 300 }], RECT_300_200, 12600);
+  // Out-of-scope incoming stub before the contract boundary (600×400, 2.0 m). Excluded once a project side is chosen.
+  const sStub = seg([{ x: 80, y: 180 }, { x: 175, y: 180 }], RECT_600_400, 2000);
 
   // Vertical continuations — no invented vertical length.
   const ylos = node({ point: { x: 150, y: 150 }, type: 'continuation', direction: 'up', incomingProfile: RECT_600_400, outgoingProfile: RECT_600_400, notes: 'YLÖS riser' });
@@ -65,7 +68,12 @@ export function createDemoDuctNetwork(pageNumber: number): DuctFixture {
   label({ x: 300, y: 168 }, '500x200 A25(E)', 'rectangular', RECT_500_200, { segmentId: sA.id });
   label({ x: 770, y: 288 }, '300x200 A25(E)', 'rectangular', RECT_300_200, { segmentId: sD.id });
   label({ x: 700, y: 360 }, 'Ø160', 'round', ROUND_160, { nodeId: transition.id });
+  label({ x: 130, y: 168 }, 'UR', 'unknown', undefined, {});
   void sB; void sC;
 
-  return { network, segments, nodes, labels };
+  // Two UR contract boundaries. The first gates the out-of-scope incoming stub.
+  boundaries.push({ id: uid('dur'), pageNumber, point: { x: 176, y: 180 }, relatedNetworkId: network.id, relatedSegmentId: sStub.id, scopeSide: 'unknown', verificationStatus: 'suggested', notes: 'Incoming contract boundary' });
+  boundaries.push({ id: uid('dur'), pageNumber, point: { x: 905, y: 300 }, relatedNetworkId: network.id, relatedSegmentId: sD.id, scopeSide: 'both', verificationStatus: 'suggested', notes: 'Downstream contract boundary' });
+
+  return { network, segments, nodes, labels, boundaries };
 }

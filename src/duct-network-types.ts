@@ -101,6 +101,21 @@ export interface DuctLabelAssociation {
   verificationStatus: DuctVerificationStatus;
 }
 
+// UR / urakkaraja — the contract boundary. Not an airflow marker. Network tracing
+// stops here by default and only the verified project-side ductwork is counted.
+export type ContractScopeSide = 'before' | 'after' | 'both' | 'unknown';
+
+export interface ContractBoundary {
+  id: string;
+  pageNumber: number;
+  point: Point;
+  relatedNetworkId?: string;
+  relatedSegmentId?: string;
+  scopeSide: ContractScopeSide;
+  verificationStatus: DuctVerificationStatus;
+  notes: string;
+}
+
 export type PartMappingStatus = 'suggested' | 'verified' | 'manual' | 'rejected';
 
 // Maps a detected/derived fitting (identified by a stable key) onto a catalogue

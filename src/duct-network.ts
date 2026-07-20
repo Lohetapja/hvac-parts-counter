@@ -1,8 +1,9 @@
-import type { Point, ProjectData } from './types';
+import type { Point, ProjectData, RouteItem } from './types';
 import type {
-  DuctNetwork, DuctNode, DuctNodeType, DuctProfile, DuctSegment, DuctSystemType, NetworkPartRow,
+  ContractBoundary, DuctNetwork, DuctNode, DuctNodeType, DuctProfile, DuctSegment, DuctSystemType, NetworkPartRow,
 } from './duct-network-types';
 import { isExtractType, isSupplyType, profileLabel, profilesEqual } from './duct-network-types';
+import { profileFromSizeText } from './duct-labels';
 import { bendCatalogueId } from './duct-catalogue';
 import { PDF_POINT_MM } from './measurements';
 
@@ -55,31 +56,96 @@ export function networkForSegment(project: ProjectData, segmentId: string): Duct
   return project.ductNetworks.find((network) => network.segmentIds.includes(segmentId));
 }
 
+export function boundariesForNetwork(project: ProjectData, network: DuctNetwork): ContractBoundary[] {
+  return project.contractBoundaries.filter((boundary) => boundary.relatedNetworkId === network.id);
+}
+
+// Segment adjacency by shared endpoints (used for UR project-side scoping).
+function segmentsAdjacent(a: DuctSegment, b: DuctSegment, tolerance = 10): boolean {
+  const aEnds = [a.centrelinePoints[0], a.centrelinePoints[a.centrelinePoints.length - 1]];
+  const bEnds = [b.centrelinePoints[0], b.centrelinePoints[b.centrelinePoints.length - 1]];
+  return aEnds.some((p) => p && bEnds.some((q) => q && Math.hypot(p.x - q.x, p.y - q.y) <= tolerance));
+}
+
+function componentFrom(segments: DuctSegment[], startId: string, blockedId: string | undefined): Set<string> {
+  const byId = new Map(segments.map((segment) => [segment.id, segment]));
+  const visited = new Set<string>();
+  const queue = [startId];
+  while (queue.length) {
+    const id = queue.shift();
+    if (id === undefined || visited.has(id) || id === blockedId) continue;
+    const segment = byId.get(id); if (!segment) continue;
+    visited.add(id);
+    segments.forEach((other) => { if (other.id !== id && other.id !== blockedId && !visited.has(other.id) && segmentsAdjacent(segment, other)) queue.push(other.id); });
+  }
+  return visited;
+}
+
+// Segments excluded from totals by verified UR contract-boundary project-side decisions.
+export function excludedSegmentIds(project: ProjectData, network: DuctNetwork): Set<string> {
+  const excluded = new Set<string>();
+  const segments = networkSegments(project, network);
+  boundariesForNetwork(project, network).forEach((boundary) => {
+    if (boundary.scopeSide === 'both' || boundary.scopeSide === 'unknown') return;
+    const gate = boundary.relatedSegmentId; if (!gate || !segments.some((segment) => segment.id === gate)) return;
+    const root = segments.find((segment) => segment.id !== gate)?.id;
+    const beyond = componentFrom(segments, gate, root);
+    if (boundary.scopeSide === 'after') beyond.forEach((id) => excluded.add(id));
+    else segments.forEach((segment) => { if (!beyond.has(segment.id)) excluded.add(segment.id); });
+  });
+  return excluded;
+}
+
+export function scopedSegments(project: ProjectData, network: DuctNetwork): DuctSegment[] {
+  const excluded = excludedSegmentIds(project, network);
+  return networkSegments(project, network).filter((segment) => !excluded.has(segment.id));
+}
+
 export interface NetworkTotals { segments: number; lengthMm: number; lengthM: number; nodes: number; }
 export function networkTotals(project: ProjectData, network: DuctNetwork): NetworkTotals {
-  const segments = networkSegments(project, network);
+  const segments = scopedSegments(project, network);
   const lengthMm = segments.reduce((sum, segment) => sum + segment.lengthMm, 0);
   return { segments: segments.length, lengthMm, lengthM: lengthMm / 1000, nodes: network.nodeIds.length };
+}
+
+export interface NetworkCounts {
+  segments: number; lengthM: number; verticalConfirmedM: number;
+  bends: number; transitions: number; branches: number; terminals: number; continuations: number;
+  ur: number; unresolved: number;
+}
+export function networkCounts(project: ProjectData, network: DuctNetwork): NetworkCounts {
+  const totals = networkTotals(project, network);
+  const nodes = networkNodes(project, network);
+  const count = (type: DuctNodeType): number => nodes.filter((node) => node.type === type).length;
+  const verticalConfirmedM = nodes.filter((node) => node.type === 'continuation' && node.confirmedVerticalLength && node.verticalLengthMm).reduce((sum, node) => sum + (node.verticalLengthMm ?? 0), 0) / 1000;
+  return {
+    segments: totals.segments, lengthM: totals.lengthM, verticalConfirmedM,
+    bends: count('bend'), transitions: count('transition'), branches: count('branch'), terminals: count('terminal'), continuations: count('continuation'),
+    ur: boundariesForNetwork(project, network).length,
+    unresolved: nodes.filter((node) => node.type === 'unknown' || (node.type === 'end' && node.verificationStatus === 'suggested')).length,
+  };
 }
 
 // ---------------------------------------------------------------------------
 // System-type highlighting summaries
 // ---------------------------------------------------------------------------
 
-export function networksOfKind(project: ProjectData, kind: 'tulo' | 'poisto'): DuctNetwork[] {
-  return project.ductNetworks.filter((network) => kind === 'tulo' ? isSupplyType(network.systemType) : isExtractType(network.systemType));
+export function networksOfKind(project: ProjectData, kind: 'tulo' | 'poisto', page?: number): DuctNetwork[] {
+  return project.ductNetworks.filter((network) =>
+    (page === undefined || network.pageNumber === page)
+    && (kind === 'tulo' ? isSupplyType(network.systemType) : isExtractType(network.systemType)));
 }
 
 export interface HighlightSummary { networks: number; segments: number; lengthM: number; text: string; }
-export function highlightSummary(project: ProjectData, kind: 'tulo' | 'poisto'): HighlightSummary {
+export function highlightSummary(project: ProjectData, kind: 'tulo' | 'poisto', page?: number): HighlightSummary {
   const label = kind === 'tulo' ? 'Tulo' : 'Poisto';
-  const networks = networksOfKind(project, kind);
+  const networks = networksOfKind(project, kind, page);
   let segments = 0; let lengthMm = 0;
   networks.forEach((network) => { const totals = networkTotals(project, network); segments += totals.segments; lengthMm += totals.lengthMm; });
   const lengthM = lengthMm / 1000;
   const text = networks.length
-    ? `${label}: ${networks.length} network${networks.length === 1 ? '' : 's'}, ${segments} segment${segments === 1 ? '' : 's'}, ${lengthM.toFixed(1)} m`
-    : `${label}: no verified ${label.toLowerCase()} networks yet. Create one, then highlight.`;
+    ? `${label}: ${networks.length} network${networks.length === 1 ? '' : 's'}, ${segments} section${segments === 1 ? '' : 's'}, ${lengthM.toFixed(1)} m`
+    : `No verified ${label} duct system was found on this page.`;
   return { networks: networks.length, segments, lengthM, text };
 }
 
@@ -156,8 +222,16 @@ function branchProfileOf(node: DuctNode): DuctProfile | undefined { return node.
 // Builds the parts list for a single network. Automatically derived parts are marked
 // "suggested"; parts from a verified network are "verified" unless a mapping rejects them.
 export function countNetworkParts(project: ProjectData, network: DuctNetwork): NetworkPartRow[] {
-  const segments = networkSegments(project, network);
-  const nodes = networkNodes(project, network);
+  const excluded = excludedSegmentIds(project, network);
+  const segments = networkSegments(project, network).filter((segment) => !excluded.has(segment.id));
+  // Drop fitting nodes that sit only on excluded (out-of-scope) segments.
+  const excludedSegs = networkSegments(project, network).filter((segment) => excluded.has(segment.id));
+  const nodeOnlyExcluded = (node: DuctNode): boolean => {
+    if (!excludedSegs.length) return false;
+    const near = (segment: DuctSegment): boolean => segment.centrelinePoints.some((point) => Math.hypot(point.x - node.point.x, point.y - node.point.y) <= 10);
+    return excludedSegs.some(near) && !segments.some(near);
+  };
+  const nodes = networkNodes(project, network).filter((node) => !nodeOnlyExcluded(node));
   const verified = network.verificationStatus === 'verified';
   const baseStatus: NetworkPartRow['status'] = verified ? 'verified' : 'suggested';
   const rows = new Map<string, NetworkPartRow>();
@@ -206,7 +280,65 @@ export function countNetworkParts(project: ProjectData, network: DuctNetwork): N
     }
   });
 
+  boundariesForNetwork(project, network).forEach((boundary) => {
+    add({ key: `ur|${boundary.id}`, catalogueId: '', category: 'Boundary', label: `UR / urakkaraja boundary (${boundary.scopeSide})`, shape: 'both', size: 'UR', quantity: 1, status: boundary.verificationStatus === 'verified' ? 'verified' : 'suggested', source: 'topology' });
+  });
+
   return [...rows.values()];
+}
+
+// ---------------------------------------------------------------------------
+// Auto-detection: migrate verified routes into network segments
+// ---------------------------------------------------------------------------
+
+function routeSystemType(system: string): DuctSystemType {
+  const lower = system.toLowerCase();
+  if (lower.includes('supply') || lower.includes('tulo')) return 'supply';
+  if (lower.includes('extract') || lower.includes('poisto')) return 'extract';
+  if (lower.includes('exhaust') || lower.includes('jäte')) return 'exhaust';
+  if (lower.includes('outdoor') || lower.includes('ulko')) return 'outdoor';
+  if (lower.includes('transfer') || lower.includes('siirto')) return 'transfer';
+  return 'unknown';
+}
+
+export interface RescanResult { networks: number; segments: number; convertedRoutes: number; }
+
+// Converts existing verified traced routes on a page into network segments, grouping
+// connected routes into one network and classifying by the route's system field.
+export function autoDetectNetworks(project: ProjectData, page: number, mmPerPdfPoint: number): RescanResult {
+  const routes = project.routes.filter((route) => route.page === page && route.points.length >= 2);
+  if (!routes.length) return { networks: 0, segments: 0, convertedRoutes: 0 };
+
+  // Group routes into connected clusters by shared endpoints + matching system type.
+  const clusters: RouteItem[][] = [];
+  const routesAdjacent = (a: RouteItem, b: RouteItem): boolean => {
+    const aEnds = [a.points[0], a.points[a.points.length - 1]];
+    const bEnds = [b.points[0], b.points[b.points.length - 1]];
+    return routeSystemType(a.system) === routeSystemType(b.system) && aEnds.some((p) => bEnds.some((q) => Math.hypot(p.x - q.x, p.y - q.y) <= 12));
+  };
+  routes.forEach((route) => {
+    const cluster = clusters.find((group) => group.some((member) => routesAdjacent(member, route)));
+    if (cluster) cluster.push(route); else clusters.push([route]);
+  });
+
+  let networkCount = 0; let segmentCount = 0;
+  clusters.forEach((cluster) => {
+    const systemType = routeSystemType(cluster[0].system);
+    const network = createNetwork(page, systemType, `Rescan network ${project.ductNetworks.length + 1}`, 'assisted-vector');
+    cluster.forEach((route) => {
+      const segment = createSegment(page, route.points.map((point) => ({ ...point })), mmPerPdfPoint, profileFromSizeText(route.size), 'vector-detected');
+      segment.networkId = network.id; project.ductSegments.push(segment); network.segmentIds.push(segment.id); segmentCount += 1;
+    });
+    project.ductNetworks.push(network);
+    const derived = deriveSuggestedNodes(project, network);
+    project.ductNodes.push(...derived); network.nodeIds.push(...derived.map((node) => node.id));
+    networkCount += 1;
+  });
+
+  // Consume the converted routes so the old trace-route workflow no longer owns them.
+  const consumed = new Set(routes.map((route) => route.id));
+  project.routes = project.routes.filter((route) => !consumed.has(route.id));
+  return { networks: networkCount, segments: segmentCount, convertedRoutes: consumed.size };
 }
 
 // ---------------------------------------------------------------------------
@@ -241,7 +373,12 @@ export function removeNetwork(project: ProjectData, networkId: string): void {
   project.ductNodes = project.ductNodes.filter((node) => !nodeIds.has(node.id));
   project.ductLabels.forEach((label) => { if (label.segmentId && segmentIds.has(label.segmentId)) { label.segmentId = undefined; } });
   project.ductPartMappings = project.ductPartMappings.filter((mapping) => mapping.networkId !== networkId);
+  project.contractBoundaries = project.contractBoundaries.filter((boundary) => boundary.relatedNetworkId !== networkId);
   project.ductNetworks = project.ductNetworks.filter((item) => item.id !== networkId);
+}
+
+export function createContractBoundary(pageNumber: number, point: Point, networkId?: string, segmentId?: string): ContractBoundary {
+  return { id: uid('dur'), pageNumber, point, relatedNetworkId: networkId, relatedSegmentId: segmentId, scopeSide: 'unknown', verificationStatus: 'suggested', notes: '' };
 }
 
 // ---------------------------------------------------------------------------

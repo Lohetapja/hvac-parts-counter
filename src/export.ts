@@ -1,6 +1,6 @@
 import { routeLengthM } from './measurements';
 import { profileForEnd } from './custom-part-assembly';
-import { countNetworkParts, networksOfKind, networkTotals } from './duct-network';
+import { boundariesForNetwork, countNetworkParts, networkCounts, networksOfKind, networkTotals } from './duct-network';
 import { systemTypeToLabel } from './duct-network-types';
 import type { PartItem, ProjectData } from './types';
 
@@ -24,7 +24,7 @@ export function makeDetailedCsv(project: ProjectData): string {
     'End A diameter (mm)', 'End B diameter (mm)', 'Outlet horizontal angle (deg)', 'Outlet vertical angle (deg)', 'Outlet rotation (deg)',
     'Airflow classification', 'Related duct route', 'Related device model', 'Confidence',
     'Tail X', 'Tail Y', 'Tip X', 'Tip Y',
-    'Network name', 'System type', 'Angle (deg)', 'Related labels',
+    'Network name', 'System type', 'Angle (deg)', 'Related labels', 'Vertical confirmed (m)', 'Contract boundary', 'In project scope',
   ]];
   const networkRow = (leading: Array<string | number>, extras: Array<string | number>): Array<string | number> => {
     const row = [...leading];
@@ -45,19 +45,18 @@ export function makeDetailedCsv(project: ProjectData): string {
     part.endAWidthMm, part.endAHeightMm, part.endBWidthMm, part.endBHeightMm, part.lengthMm,
     part.horizontalOffsetMm, part.verticalOffsetMm, part.material, part.thicknessMm, part.partNumber ?? '', part.endADiameterMm, part.endBDiameterMm, part.outletHorizontalAngleDeg, part.outletVerticalAngleDeg, part.outletRotationDeg,
   ]));
-  project.airflowMarkers.filter((marker) => marker.verificationStatus !== 'rejected').forEach((marker) => rows.push([
-    'Airflow point', '', '', '', marker.system ?? '', 1, '', '', marker.source, marker.verificationStatus, marker.notes, marker.pageNumber,
-    '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', marker.classification, marker.nearestRouteId ?? marker.temporaryAxisId ?? '', marker.deviceModel ?? '', marker.confidence.toFixed(3),
-    marker.tail.x.toFixed(3), marker.tail.y.toFixed(3), marker.tip.x.toFixed(3), marker.tip.y.toFixed(3),
-  ]));
-  // Duct networks: measured lengths per profile and derived fittings (rejected items excluded).
+  // Individual airflow-arrow markers are intentionally NOT emitted in normal material
+  // exports; they are internal classification evidence only.
+  // Duct networks: measured lengths per profile and derived fittings (rejected + out-of-scope excluded).
   project.ductNetworks.forEach((network) => {
     const systemLabel = systemTypeToLabel(network.systemType);
     const labelSummary = project.ductLabels.filter((label) => network.segmentIds.some((id) => id === label.segmentId) || network.nodeIds.some((id) => id === label.nodeId)).map((label) => label.normalized).join(' ');
+    const verticalConfirmed = networkCounts(project, network).verticalConfirmedM;
+    const scopeSummary = boundariesForNetwork(project, network).map((boundary) => boundary.scopeSide).join('/');
     countNetworkParts(project, network).forEach((partRow) => {
       rows.push(networkRow(
         [partRow.category, partRow.label, partRow.shape, partRow.size, systemLabel, partRow.quantity, partRow.lengthM !== undefined ? partRow.lengthM.toFixed(3) : '', '', `network-${partRow.source}`, partRow.status, network.notes, network.pageNumber],
-        [network.name, network.systemType, partRow.angleDeg ?? '', labelSummary],
+        [network.name, network.systemType, partRow.angleDeg ?? '', labelSummary, verticalConfirmed.toFixed(3), partRow.category === 'Boundary' ? partRow.label : scopeSummary, 'yes'],
       ));
     });
   });
@@ -91,20 +90,6 @@ export function makeSummaryCsv(project: ProjectData): string {
     current.quantity += part.quantity; customParts.set(key, current);
   });
   customParts.forEach((part) => rows.push(['Custom fitting', part.label, part.system, part.quantity, part.status]));
-  const activeAirflow = project.airflowMarkers.filter((marker) => marker.verificationStatus !== 'rejected');
-  rows.push([], ['AIRFLOW POINTS'], ['Classification', 'Count', 'Verified', 'Suggested']);
-  (['supply', 'extract', 'uncertain'] as const).forEach((classification) => {
-    const matching = activeAirflow.filter((marker) => marker.classification === classification);
-    rows.push([classification === 'supply' ? 'Tulo / Supply' : classification === 'extract' ? 'Poisto / Extract' : 'Epävarma / Uncertain', matching.length, matching.filter((marker) => marker.verificationStatus === 'verified').length, matching.filter((marker) => marker.verificationStatus === 'suggested').length]);
-  });
-  rows.push([], ['AIRFLOW BY SYSTEM / MODEL / PAGE'], ['System', 'Device model', 'Page', 'Tulo', 'Poisto', 'Uncertain', 'Verified', 'Suggested']);
-  const airflowGroups = new Map<string, { system: string; model: string; page: number; supply: number; extract: number; uncertain: number; verified: number; suggested: number }>();
-  activeAirflow.forEach((marker) => {
-    const system = marker.system ?? 'Unassigned'; const model = marker.deviceModel ?? 'No model'; const key = `${system}|${model}|${marker.pageNumber}`;
-    const group = airflowGroups.get(key) ?? { system, model, page: marker.pageNumber, supply: 0, extract: 0, uncertain: 0, verified: 0, suggested: 0 };
-    group[marker.classification] += 1; if (marker.verificationStatus === 'verified') group.verified += 1; else group.suggested += 1; airflowGroups.set(key, group);
-  });
-  airflowGroups.forEach((group) => rows.push([group.system, group.model, group.page, group.supply, group.extract, group.uncertain, group.verified, group.suggested]));
 
   rows.push([], ['DUCT SYSTEMS (NETWORKS)'], ['Group', 'Network', 'System type', 'Segments', 'Length (m)', 'Verification']);
   (['tulo', 'poisto'] as const).forEach((kind) => {

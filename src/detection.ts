@@ -1,4 +1,4 @@
-import type { DetectionSuggestion } from './types';
+import type { DetectionLocation, DetectionSuggestion } from './types';
 
 export interface PdfTextItem {
   str: string;
@@ -43,7 +43,9 @@ function hash(value: string): string {
   return (result >>> 0).toString(36);
 }
 
-function candidates(items: PdfTextItem[]): Array<{ normalized: string; raw: string; start: number; end: number }> {
+interface TextCandidate { normalized: string; raw: string; start: number; end: number; x: number; y: number; width: number; height: number }
+
+function candidates(items: PdfTextItem[]): TextCandidate[] {
   const positioned: PositionedText[] = items
     .filter((item) => item.str.trim())
     .map((item) => ({
@@ -53,7 +55,7 @@ function candidates(items: PdfTextItem[]): Array<{ normalized: string; raw: stri
     }))
     .sort((a, b) => Math.abs(b.y - a.y) > Math.max(a.height, b.height) * 0.55 ? b.y - a.y : a.x - b.x);
 
-  const result = positioned.map((item, index) => ({ normalized: compactCandidate(item.text), raw: item.raw, start: index, end: index }));
+  const result = positioned.map((item, index) => ({ normalized: compactCandidate(item.text), raw: item.raw, start: index, end: index, x: item.x, y: item.y, width: item.width, height: item.height }));
   for (let start = 0; start < positioned.length; start += 1) {
     let joined = positioned[start].text;
     let raw = positioned[start].raw;
@@ -67,28 +69,38 @@ function candidates(items: PdfTextItem[]): Array<{ normalized: string; raw: stri
       joined += next.text;
       raw += ` | ${next.raw}`;
       right = next.x + next.width;
-      result.push({ normalized: compactCandidate(joined), raw, start, end });
+      result.push({ normalized: compactCandidate(joined), raw, start, end, x: positioned[start].x, y: positioned[start].y, width: Math.max(1, right - positioned[start].x), height: Math.max(positioned[start].height, next.height) });
     }
   }
   return result;
 }
 
-export function detectLabels(items: PdfTextItem[], page: number): DetectionSuggestion[] {
-  const matches: Array<{ model: string; quantity: number; raw: string; start: number; end: number }> = [];
+function matchedCandidates(items: PdfTextItem[]): Array<TextCandidate & { model: string; quantity: number }> {
+  const matches: Array<TextCandidate & { model: string; quantity: number }> = [];
   for (const candidate of candidates(items)) {
     const match = candidate.normalized.match(LABEL_RE);
-    if (!match) continue;
-    const model = match[2].toUpperCase();
-    const quantity = Math.max(1, Number(match[1] ?? 1));
-    matches.push({ model, quantity, raw: candidate.raw, start: candidate.start, end: candidate.end });
+    if (match) matches.push({ ...candidate, model: match[2].toUpperCase(), quantity: Math.max(1, Number(match[1] ?? 1)) });
   }
-
-  const maximalMatches = matches.filter((entry, index) => !matches.some((other, otherIndex) =>
+  return matches.filter((entry, index) => !matches.some((other, otherIndex) =>
     otherIndex !== index && other.model === entry.model && other.start <= entry.start && other.end >= entry.end
     && (other.end - other.start) > (entry.end - entry.start),
   ));
+}
+
+export function detectLabelLocations(items: PdfTextItem[], page: number): DetectionLocation[] {
+  const unique = new Map<string, DetectionLocation>();
+  matchedCandidates(items).forEach((entry) => {
+    const key = `${entry.model}|${entry.quantity}|${entry.start}|${entry.end}`;
+    unique.set(key, { id: `label-${page}-${hash(key)}`, model: entry.model, quantity: entry.quantity, page, raw: entry.raw, x: entry.x, y: entry.y, width: Math.max(entry.width, entry.height), height: entry.height });
+  });
+  return [...unique.values()];
+}
+
+export function detectLabels(items: PdfTextItem[], page: number): DetectionSuggestion[] {
+  const matches: Array<{ model: string; quantity: number; raw: string; start: number; end: number }> = [];
+  matchedCandidates(items).forEach((candidate) => matches.push({ model: candidate.model, quantity: candidate.quantity, raw: candidate.raw, start: candidate.start, end: candidate.end }));
   const unique = new Map<string, { model: string; quantity: number; raw: string }>();
-  maximalMatches.forEach((entry) => unique.set(`${entry.model}|${entry.quantity}|${entry.start}|${entry.end}`, entry));
+  matches.forEach((entry) => unique.set(`${entry.model}|${entry.quantity}|${entry.start}|${entry.end}`, entry));
 
   const grouped = new Map<string, DetectionSuggestion>();
   for (const entry of unique.values()) {

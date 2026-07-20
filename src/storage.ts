@@ -1,7 +1,7 @@
 import type { ProjectData } from './types';
 
-export const STORAGE_KEY = 'hvac-parts-counter-project-v3';
-const LEGACY_STORAGE_KEY = 'hvac-parts-counter-project-v2';
+export const STORAGE_KEY = 'hvac-parts-counter-project-v4';
+const LEGACY_KEYS = ['hvac-parts-counter-project-v3', 'hvac-parts-counter-project-v2'];
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
@@ -53,8 +53,36 @@ function isCustomPart(value: unknown): boolean {
     && (value.verificationStatus === 'suggested' || value.verificationStatus === 'verified');
 }
 
+function isAirflowMarker(value: unknown): boolean {
+  const classifications = ['supply', 'extract', 'uncertain']; const statuses = ['suggested', 'verified', 'rejected']; const sources = ['manual-two-point', 'vector-detected', 'similarity-scan'];
+  return isRecord(value)
+    && ['id', 'notes', 'createdAt', 'updatedAt'].every((key) => isString(value[key]))
+    && isFiniteNumber(value.pageNumber)
+    && isPoint(value.tail) && isPoint(value.tip) && isPoint(value.nearestPoint)
+    && ['distanceToDuct', 'dotProductScore', 'arrowAngleDegrees', 'confidence'].every((key) => isFiniteNumber(value[key]))
+    && classifications.includes(String(value.classification))
+    && statuses.includes(String(value.verificationStatus))
+    && sources.includes(String(value.source))
+    && (value.nearestRouteId === undefined || isString(value.nearestRouteId))
+    && (value.temporaryAxisId === undefined || isString(value.temporaryAxisId))
+    && (value.deviceModel === undefined || isString(value.deviceModel))
+    && (value.system === undefined || isString(value.system));
+}
+
+function isTemporaryAxis(value: unknown): boolean {
+  return isRecord(value) && isString(value.id) && isFiniteNumber(value.pageNumber) && isPoint(value.start) && isPoint(value.end) && isString(value.createdAt);
+}
+
+function isAirflowVisibility(value: unknown): boolean {
+  return isRecord(value) && ['showSupply', 'showExtract', 'showUncertain', 'verifiedOnly', 'showLabels', 'showVectors'].every((key) => typeof value[key] === 'boolean');
+}
+
+function airflowDefaults(): Pick<ProjectData, 'airflowMarkers' | 'temporaryDuctAxes' | 'airflowVisibility'> {
+  return { airflowMarkers: [], temporaryDuctAxes: [], airflowVisibility: { showSupply: true, showExtract: true, showUncertain: true, verifiedOnly: false, showLabels: true, showVectors: true } };
+}
+
 function isValidProject(value: unknown): value is ProjectData {
-  if (!isRecord(value) || value.version !== 3) return false;
+  if (!isRecord(value) || value.version !== 4) return false;
   const calibration = value.calibration;
   const drawing = value.drawing;
   return typeof value.projectName === 'string'
@@ -74,6 +102,11 @@ function isValidProject(value: unknown): value is ProjectData {
     && value.parts.every(isPart)
     && Array.isArray(value.customParts)
     && value.customParts.every(isCustomPart)
+    && Array.isArray(value.airflowMarkers)
+    && value.airflowMarkers.every(isAirflowMarker)
+    && Array.isArray(value.temporaryDuctAxes)
+    && value.temporaryDuctAxes.every(isTemporaryAxis)
+    && isAirflowVisibility(value.airflowVisibility)
     && Array.isArray(value.rejectedDetectionIds)
     && value.rejectedDetectionIds.every(isString)
     && typeof value.createdAt === 'string'
@@ -105,9 +138,9 @@ export function loadProject(): ProjectData | null {
   let raw: string | null;
   try {
     raw = localStorage.getItem(key);
-    if (raw === null) {
-      key = LEGACY_STORAGE_KEY;
-      raw = localStorage.getItem(key);
+    for (const legacyKey of LEGACY_KEYS) {
+      if (raw !== null) break;
+      key = legacyKey; raw = localStorage.getItem(key);
     }
   } catch (error) {
     console.warn('Browser storage is unavailable.', error);
@@ -116,8 +149,8 @@ export function loadProject(): ProjectData | null {
   if (!raw) return null;
   try {
     const value: unknown = JSON.parse(raw);
-    if (isRecord(value) && value.version === 2) {
-      const migrated: unknown = { ...value, version: 3, customParts: [] };
+    if (isRecord(value) && (value.version === 2 || value.version === 3)) {
+      const migrated: unknown = { ...value, version: 4, customParts: Array.isArray(value.customParts) ? value.customParts : [], ...airflowDefaults() };
       if (isValidProject(migrated)) return migrated;
     }
     if (isValidProject(value)) return value;
@@ -133,7 +166,7 @@ export function loadProject(): ProjectData | null {
 export function clearSavedProject(): void {
   try {
     localStorage.removeItem(STORAGE_KEY);
-    localStorage.removeItem(LEGACY_STORAGE_KEY);
+    LEGACY_KEYS.forEach((key) => localStorage.removeItem(key));
   } catch (error) {
     console.warn('Could not clear browser storage.', error);
   }

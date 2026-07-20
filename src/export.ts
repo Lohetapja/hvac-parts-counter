@@ -18,6 +18,8 @@ export function makeDetailedCsv(project: ProjectData): string {
     'Added vertical length (m)', 'Source', 'Verification status', 'Notes', 'Page', 'Part type', 'Name',
     'End A width (mm)', 'End A height (mm)', 'End B width (mm)', 'End B height (mm)', 'Length (mm)',
     'Horizontal offset (mm)', 'Vertical offset (mm)', 'Material', 'Thickness (mm)',
+    'Airflow classification', 'Related duct route', 'Related device model', 'Confidence',
+    'Tail X', 'Tail Y', 'Tip X', 'Tip Y',
   ]];
   project.routes.forEach((route) => rows.push([
     'Duct', 'Route', route.shape, route.size, route.system, 1, routeLengthM(route, project).toFixed(3),
@@ -32,6 +34,11 @@ export function makeDetailedCsv(project: ProjectData): string {
     part.system, part.quantity, '', '', 'custom-builder', part.verificationStatus, part.notes, '', part.partType, part.name,
     part.endAWidthMm, part.endAHeightMm, part.endBWidthMm, part.endBHeightMm, part.lengthMm,
     part.horizontalOffsetMm, part.verticalOffsetMm, part.material, part.thicknessMm,
+  ]));
+  project.airflowMarkers.filter((marker) => marker.verificationStatus !== 'rejected').forEach((marker) => rows.push([
+    'Airflow point', '', '', '', marker.system ?? '', 1, '', '', marker.source, marker.verificationStatus, marker.notes, marker.pageNumber,
+    '', '', '', '', '', '', '', '', '', '', '', marker.classification, marker.nearestRouteId ?? marker.temporaryAxisId ?? '', marker.deviceModel ?? '', marker.confidence.toFixed(3),
+    marker.tail.x.toFixed(3), marker.tail.y.toFixed(3), marker.tip.x.toFixed(3), marker.tip.y.toFixed(3),
   ]));
   return rows.map((row) => row.map(csv).join(',')).join('\r\n');
 }
@@ -61,5 +68,19 @@ export function makeSummaryCsv(project: ProjectData): string {
     current.quantity += part.quantity; customParts.set(key, current);
   });
   customParts.forEach((part) => rows.push(['Custom fitting', part.label, part.system, part.quantity, part.status]));
+  const activeAirflow = project.airflowMarkers.filter((marker) => marker.verificationStatus !== 'rejected');
+  rows.push([], ['AIRFLOW POINTS'], ['Classification', 'Count', 'Verified', 'Suggested']);
+  (['supply', 'extract', 'uncertain'] as const).forEach((classification) => {
+    const matching = activeAirflow.filter((marker) => marker.classification === classification);
+    rows.push([classification === 'supply' ? 'Tulo / Supply' : classification === 'extract' ? 'Poisto / Extract' : 'Epävarma / Uncertain', matching.length, matching.filter((marker) => marker.verificationStatus === 'verified').length, matching.filter((marker) => marker.verificationStatus === 'suggested').length]);
+  });
+  rows.push([], ['AIRFLOW BY SYSTEM / MODEL / PAGE'], ['System', 'Device model', 'Page', 'Tulo', 'Poisto', 'Uncertain', 'Verified', 'Suggested']);
+  const airflowGroups = new Map<string, { system: string; model: string; page: number; supply: number; extract: number; uncertain: number; verified: number; suggested: number }>();
+  activeAirflow.forEach((marker) => {
+    const system = marker.system ?? 'Unassigned'; const model = marker.deviceModel ?? 'No model'; const key = `${system}|${model}|${marker.pageNumber}`;
+    const group = airflowGroups.get(key) ?? { system, model, page: marker.pageNumber, supply: 0, extract: 0, uncertain: 0, verified: 0, suggested: 0 };
+    group[marker.classification] += 1; if (marker.verificationStatus === 'verified') group.verified += 1; else group.suggested += 1; airflowGroups.set(key, group);
+  });
+  airflowGroups.forEach((group) => rows.push([group.system, group.model, group.page, group.supply, group.extract, group.uncertain, group.verified, group.suggested]));
   return rows.map((row) => row.map(csv).join(',')).join('\r\n');
 }

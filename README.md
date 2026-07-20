@@ -36,11 +36,29 @@ npm install
 npm run dev
 ```
 
-## Production build
+## Production validation
 
 ```bash
 npm run build
+npm run preview
 ```
+
+The production preview is served beneath the same project path used by GitHub Pages:
+
+`http://127.0.0.1:4173/hvac-parts-counter/`
+
+## Deploy to GitHub Pages
+
+The repository is configured to deploy `dist/` with the official GitHub Pages Actions workflow whenever `main` is pushed.
+
+1. Push the `main` branch to `https://github.com/Lohetapja/hvac-parts-counter`.
+2. In the repository, open **Settings → Pages**.
+3. Set **Source** to **GitHub Actions**.
+4. Monitor the **Deploy HVAC Parts Counter** workflow.
+
+Expected site: https://lohetapja.github.io/hvac-parts-counter/
+
+Uploaded drawings stay in the browser and are never included in local project storage. Real PDFs must not be committed; the repository ignores all `*.pdf` files and `public/test-drawings/`.
 
 ## Demo workflow
 

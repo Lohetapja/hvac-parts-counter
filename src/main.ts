@@ -213,7 +213,13 @@ function markChanged(): void {
 }
 function persist(notify = true): void {
   project.projectName = els.projectName.value.trim() || 'Untitled HVAC Takeoff';
-  project.updatedAt = now(); saveProject(project);
+  project.updatedAt = now();
+  if (!saveProject(project)) {
+    els.savedStatus.textContent = 'Local save failed';
+    status('Local save failed. Browser storage may be unavailable or full.');
+    if (notify) toast('Could not save project locally');
+    return;
+  }
   els.savedStatus.textContent = `Saved locally ${new Date(project.updatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
   if (notify) toast('Project saved locally');
 }

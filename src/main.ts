@@ -66,6 +66,9 @@ let labelLocations: DetectionLocation[] = [];
 let selectedLabelModel: string | null = null;
 let selectedLabelId: string | null = null;
 let selectedAirflowIds = new Set<string>();
+let focusedAirflowId: string | null = null;
+let airflowSelectionScopeTouched = false;
+let airflowSelectionCursor = 0;
 let airflowDraft: Point[] = [];
 let forceManualAirflow = false;
 let axisDraft: Point[] = [];
@@ -124,7 +127,11 @@ app.innerHTML = `
         <div id="airflowInstructions" class="callout hidden"></div>
         <div class="airflow-legend" aria-label="Airflow overlay legend"><span class="supply">T▲ Tulo / Supply</span><span class="extract">P◆ Poisto / Extract</span><span class="uncertain">? Epävarma / Uncertain</span><span class="verified">solid = Vahvistettu / Verified</span></div>
         <div class="toggle-grid"><label><input id="showSupply" type="checkbox" checked> Show Tulo</label><label><input id="showExtract" type="checkbox" checked> Show Poisto</label><label><input id="showUncertain" type="checkbox" checked> Show uncertain</label><label><input id="verifiedOnly" type="checkbox"> Verified only</label><label><input id="showAirflowLabels" type="checkbox" checked> Show labels</label><label><input id="showAirflowVectors" type="checkbox" checked> Show vectors</label></div>
-        <div class="button-row"><button id="selectSupplyBtn" class="btn small">Select all Tulo</button><button id="selectExtractBtn" class="btn small">Select all Poisto</button><button id="clearAirflowBtn" class="btn small ghost danger">Clear airflow scan</button></div>
+        <label class="field"><span class="label">Bulk-selection scope</span><select id="airflowSelectionScope" class="select"><option value="page">Current page</option><option value="route">Selected duct</option><option value="visible">Visible area</option><option value="project">Entire project</option></select></label>
+        <div id="airflowSelectionScopeStatus" class="item-meta">Scope: Current page</div>
+        <div class="button-row"><button id="selectSupplyBtn" class="btn small">Select all Tulo</button><button id="selectExtractBtn" class="btn small">Select all Poisto</button><button id="clearAirflowSelectionBtn" class="btn small ghost" disabled>Clear selection</button></div>
+        <div id="airflowSelectionStatus" class="selection-feedback" aria-live="polite">No airflow markers selected.</div>
+        <div class="button-row"><button id="showSelectedAirflowBtn" class="btn small ghost hidden">Show selected markers</button><button id="clearAirflowBtn" class="btn small ghost danger">Clear airflow scan</button></div>
       </div></section>
       <section class="panel"><div class="panel-header"><h2>Quick parts</h2></div><div class="panel-body">
         <label class="field"><span class="label">Category</span><select id="partCategory" class="select">${PART_CATEGORIES.map((value) => `<option>${value}</option>`).join('')}</select></label>
@@ -152,6 +159,7 @@ app.innerHTML = `
         <div class="inline"><label class="field"><span class="label">Filter</span><select id="airflowFilter" class="select"><option value="all">All</option><option value="supply">Tulo</option><option value="extract">Poisto</option><option value="uncertain">Uncertain</option><option value="suggested">Suggested</option><option value="verified">Verified</option></select></label><label class="field"><span class="label">Sort</span><select id="airflowSort" class="select"><option value="position">Page position</option><option value="classification">Classification</option><option value="confidence">Confidence</option><option value="duct">Related duct</option></select></label></div>
         <div class="button-row"><button id="verifyAirflowBtn" class="btn small" disabled>Verify selected</button><button id="flipAirflowBtn" class="btn small" disabled>Flip selected</button><button id="rejectAirflowBtn" class="btn small" disabled>Reject selected</button><button id="deleteAirflowBtn" class="btn small danger" disabled>Delete selected</button></div>
         <div class="button-row"><button id="setSupplyBtn" class="btn small" disabled>Mark Tulo</button><button id="setExtractBtn" class="btn small" disabled>Mark Poisto</button><button id="setUncertainBtn" class="btn small" disabled>Mark uncertain</button></div>
+        <div class="button-row"><button id="fitSelectedAirflowBtn" class="btn small" disabled>Fit selected</button><button id="previousSelectedAirflowBtn" class="btn small" disabled>Previous</button><button id="nextSelectedAirflowBtn" class="btn small" disabled>Next</button><button id="clearReviewSelectionBtn" class="btn small ghost" disabled>Clear selection</button></div>
         <label class="field"><span class="label">Related duct / temporary axis</span><select id="airflowRoute" class="select"><option value="">Keep automatic association</option></select></label>
         <label class="field"><span class="label">Related model for selected</span><input id="airflowModel" class="input" placeholder="e.g. KTS-125-0-C-125"></label>
         <label class="field"><span class="label">Notes for selected</span><input id="airflowNotes" class="input" placeholder="Review notes"></label><div class="button-row"><button id="updateAirflowBtn" class="btn small" disabled>Update selected</button><button id="associateLabelBtn" class="btn small" disabled>Associate picked label</button></div>
@@ -183,8 +191,8 @@ const els = {
   viewerScroll: byId<HTMLDivElement>('viewerScroll'), canvasStage: byId<HTMLDivElement>('canvasStage'), emptyState: byId<HTMLDivElement>('emptyState'), pdfCanvas: byId<HTMLCanvasElement>('pdfCanvas'), overlayCanvas: byId<HTMLCanvasElement>('overlayCanvas'), zoomOutBtn: byId<HTMLButtonElement>('zoomOutBtn'), zoomInBtn: byId<HTMLButtonElement>('zoomInBtn'), fitBtn: byId<HTMLButtonElement>('fitBtn'), zoomReadout: byId<HTMLSpanElement>('zoomReadout'), undoBtn: byId<HTMLButtonElement>('undoBtn'), redoBtn: byId<HTMLButtonElement>('redoBtn'), progress: byId<HTMLDivElement>('progress'), statusText: byId<HTMLSpanElement>('statusText'),
   totalDuct: byId<HTMLElement>('totalDuct'), totalRoutes: byId<HTMLElement>('totalRoutes'), totalFittings: byId<HTMLElement>('totalFittings'), totalDevices: byId<HTMLElement>('totalDevices'), unverifiedCount: byId<HTMLElement>('unverifiedCount'), ductSummary: byId<HTMLDivElement>('ductSummary'), partSummary: byId<HTMLDivElement>('partSummary'), detailList: byId<HTMLDivElement>('detailList'), scanBtn: byId<HTMLButtonElement>('scanBtn'), detectionList: byId<HTMLDivElement>('detectionList'), exportSummaryBtn: byId<HTMLButtonElement>('exportSummaryBtn'), exportDetailBtn: byId<HTMLButtonElement>('exportDetailBtn'), exportJsonBtn: byId<HTMLButtonElement>('exportJsonBtn'), toast: byId<HTMLDivElement>('toast'),
   takeoffWorkspace: byId<HTMLElement>('takeoffWorkspace'), customBuilderWorkspace: byId<HTMLElement>('customBuilderWorkspace'), materialWorkspace: byId<HTMLElement>('materialWorkspace'), materialNavCount: byId<HTMLElement>('materialNavCount'), materialHeadline: byId<HTMLDivElement>('materialHeadline'), materialStandardList: byId<HTMLDivElement>('materialStandardList'), materialCustomList: byId<HTMLDivElement>('materialCustomList'), materialNewCustom: byId<HTMLButtonElement>('materialNewCustom'), materialExportSummary: byId<HTMLButtonElement>('materialExportSummary'), materialExportDetails: byId<HTMLButtonElement>('materialExportDetails'), materialExportJson: byId<HTMLButtonElement>('materialExportJson'),
-  airflowCount: byId<HTMLElement>('airflowCount'), markAirflowBtn: byId<HTMLButtonElement>('markAirflowBtn'), manualAirflowBtn: byId<HTMLButtonElement>('manualAirflowBtn'), temporaryAxisBtn: byId<HTMLButtonElement>('temporaryAxisBtn'), scanSimilarBtn: byId<HTMLButtonElement>('scanSimilarBtn'), cancelAirflowScanBtn: byId<HTMLButtonElement>('cancelAirflowScanBtn'), airflowScope: byId<HTMLSelectElement>('airflowScope'), airflowInstructions: byId<HTMLDivElement>('airflowInstructions'), showSupply: byId<HTMLInputElement>('showSupply'), showExtract: byId<HTMLInputElement>('showExtract'), showUncertain: byId<HTMLInputElement>('showUncertain'), verifiedOnly: byId<HTMLInputElement>('verifiedOnly'), showAirflowLabels: byId<HTMLInputElement>('showAirflowLabels'), showAirflowVectors: byId<HTMLInputElement>('showAirflowVectors'), selectSupplyBtn: byId<HTMLButtonElement>('selectSupplyBtn'), selectExtractBtn: byId<HTMLButtonElement>('selectExtractBtn'), clearAirflowBtn: byId<HTMLButtonElement>('clearAirflowBtn'),
-  airflowReviewCount: byId<HTMLElement>('airflowReviewCount'), airflowTotals: byId<HTMLDivElement>('airflowTotals'), airflowFilter: byId<HTMLSelectElement>('airflowFilter'), airflowSort: byId<HTMLSelectElement>('airflowSort'), verifyAirflowBtn: byId<HTMLButtonElement>('verifyAirflowBtn'), flipAirflowBtn: byId<HTMLButtonElement>('flipAirflowBtn'), rejectAirflowBtn: byId<HTMLButtonElement>('rejectAirflowBtn'), deleteAirflowBtn: byId<HTMLButtonElement>('deleteAirflowBtn'), setSupplyBtn: byId<HTMLButtonElement>('setSupplyBtn'), setExtractBtn: byId<HTMLButtonElement>('setExtractBtn'), setUncertainBtn: byId<HTMLButtonElement>('setUncertainBtn'), airflowRoute: byId<HTMLSelectElement>('airflowRoute'), airflowModel: byId<HTMLInputElement>('airflowModel'), airflowNotes: byId<HTMLInputElement>('airflowNotes'), updateAirflowBtn: byId<HTMLButtonElement>('updateAirflowBtn'), associateLabelBtn: byId<HTMLButtonElement>('associateLabelBtn'), selectedLabelPanel: byId<HTMLDivElement>('selectedLabelPanel'), airflowGroups: byId<HTMLDivElement>('airflowGroups'), airflowReviewList: byId<HTMLDivElement>('airflowReviewList'),
+  airflowCount: byId<HTMLElement>('airflowCount'), markAirflowBtn: byId<HTMLButtonElement>('markAirflowBtn'), manualAirflowBtn: byId<HTMLButtonElement>('manualAirflowBtn'), temporaryAxisBtn: byId<HTMLButtonElement>('temporaryAxisBtn'), scanSimilarBtn: byId<HTMLButtonElement>('scanSimilarBtn'), cancelAirflowScanBtn: byId<HTMLButtonElement>('cancelAirflowScanBtn'), airflowScope: byId<HTMLSelectElement>('airflowScope'), airflowSelectionScope: byId<HTMLSelectElement>('airflowSelectionScope'), airflowSelectionScopeStatus: byId<HTMLElement>('airflowSelectionScopeStatus'), airflowSelectionStatus: byId<HTMLElement>('airflowSelectionStatus'), airflowInstructions: byId<HTMLDivElement>('airflowInstructions'), showSupply: byId<HTMLInputElement>('showSupply'), showExtract: byId<HTMLInputElement>('showExtract'), showUncertain: byId<HTMLInputElement>('showUncertain'), verifiedOnly: byId<HTMLInputElement>('verifiedOnly'), showAirflowLabels: byId<HTMLInputElement>('showAirflowLabels'), showAirflowVectors: byId<HTMLInputElement>('showAirflowVectors'), selectSupplyBtn: byId<HTMLButtonElement>('selectSupplyBtn'), selectExtractBtn: byId<HTMLButtonElement>('selectExtractBtn'), clearAirflowSelectionBtn: byId<HTMLButtonElement>('clearAirflowSelectionBtn'), showSelectedAirflowBtn: byId<HTMLButtonElement>('showSelectedAirflowBtn'), clearAirflowBtn: byId<HTMLButtonElement>('clearAirflowBtn'),
+  airflowReviewCount: byId<HTMLElement>('airflowReviewCount'), airflowTotals: byId<HTMLDivElement>('airflowTotals'), airflowFilter: byId<HTMLSelectElement>('airflowFilter'), airflowSort: byId<HTMLSelectElement>('airflowSort'), verifyAirflowBtn: byId<HTMLButtonElement>('verifyAirflowBtn'), flipAirflowBtn: byId<HTMLButtonElement>('flipAirflowBtn'), rejectAirflowBtn: byId<HTMLButtonElement>('rejectAirflowBtn'), deleteAirflowBtn: byId<HTMLButtonElement>('deleteAirflowBtn'), setSupplyBtn: byId<HTMLButtonElement>('setSupplyBtn'), setExtractBtn: byId<HTMLButtonElement>('setExtractBtn'), setUncertainBtn: byId<HTMLButtonElement>('setUncertainBtn'), fitSelectedAirflowBtn: byId<HTMLButtonElement>('fitSelectedAirflowBtn'), previousSelectedAirflowBtn: byId<HTMLButtonElement>('previousSelectedAirflowBtn'), nextSelectedAirflowBtn: byId<HTMLButtonElement>('nextSelectedAirflowBtn'), clearReviewSelectionBtn: byId<HTMLButtonElement>('clearReviewSelectionBtn'), airflowRoute: byId<HTMLSelectElement>('airflowRoute'), airflowModel: byId<HTMLInputElement>('airflowModel'), airflowNotes: byId<HTMLInputElement>('airflowNotes'), updateAirflowBtn: byId<HTMLButtonElement>('updateAirflowBtn'), associateLabelBtn: byId<HTMLButtonElement>('associateLabelBtn'), selectedLabelPanel: byId<HTMLDivElement>('selectedLabelPanel'), airflowGroups: byId<HTMLDivElement>('airflowGroups'), airflowReviewList: byId<HTMLDivElement>('airflowReviewList'),
 };
 
 function toast(message: string): void { els.toast.textContent = message; els.toast.classList.add('show'); window.setTimeout(() => els.toast.classList.remove('show'), 2200); }
@@ -211,6 +219,10 @@ function saveCustomPart(part: CustomPart): void {
     part.createdAt = now(); part.updatedAt = part.createdAt; project.customParts.push(part); toast('Custom part saved to material list');
   }
   markChanged(); switchWorkspace('materials');
+}
+function updateCustomPartDraft(part: CustomPart): void {
+  const index = project.customParts.findIndex((item) => item.id === part.id); if (index < 0) return;
+  part.createdAt = project.customParts[index].createdAt; part.updatedAt = now(); project.customParts[index] = syncCustomPartAssembly(part); markChanged();
 }
 
 function editCustomPart(id: string): void {
@@ -401,6 +413,7 @@ function drawOverlay(): void {
   project.airflowMarkers.filter(visibleAirflow).forEach((marker) => {
     const selected = selectedAirflowIds.has(marker.id); const color = marker.classification === 'supply' ? '#52d6ff' : marker.classification === 'extract' ? '#ff9b6b' : '#ffd66b';
     const tail = { x: marker.tail.x * renderScale, y: marker.tail.y * renderScale }; const tip = { x: marker.tip.x * renderScale, y: marker.tip.y * renderScale }; const angle = Math.atan2(tip.y - tail.y, tip.x - tail.x);
+    if (selected) { context.save(); context.beginPath(); context.arc(tip.x, tip.y, marker.id === focusedAirflowId ? 17 : 14, 0, Math.PI * 2); context.strokeStyle = marker.id === focusedAirflowId ? '#ffffff' : '#ff66da'; context.lineWidth = marker.id === focusedAirflowId ? 4 : 3; context.setLineDash([4, 3]); context.stroke(); context.restore(); }
     context.save(); context.strokeStyle = selected ? '#ff66da' : color; context.fillStyle = selected ? '#ff66da' : color; context.lineWidth = selected ? 5 : marker.verificationStatus === 'verified' ? 3.5 : 2.5; context.setLineDash(marker.verificationStatus === 'verified' ? [] : [7, 5]);
     if (project.airflowVisibility.showVectors) { context.beginPath(); context.moveTo(tail.x, tail.y); context.lineTo(tip.x, tip.y); context.stroke(); context.beginPath(); context.moveTo(tip.x, tip.y); context.lineTo(tip.x - Math.cos(angle - .55) * 12, tip.y - Math.sin(angle - .55) * 12); context.moveTo(tip.x, tip.y); context.lineTo(tip.x - Math.cos(angle + .55) * 12, tip.y - Math.sin(angle + .55) * 12); context.stroke(); }
     context.setLineDash([]); context.beginPath();
@@ -431,6 +444,7 @@ function finishTrace(): void {
 function cancelTrace(notify = true): void { currentTrace = []; previewPoint = null; drawOverlay(); renderUi(); if (notify) toast('Current route cancelled'); }
 function selectRoute(route: RouteItem | null): void {
   selectedRouteId = route?.id ?? null; selectedPartId = null;
+  if (!airflowSelectionScopeTouched) els.airflowSelectionScope.value = route ? 'route' : 'page';
   if (route) { els.ductShape.value = route.shape; els.ductSize.value = route.size; els.ductSystem.value = route.system; els.ductNotes.value = route.notes; }
   renderUi();
 }
@@ -515,6 +529,87 @@ function visibleAirflow(marker: AirflowMarker): boolean {
   const visibility = project.airflowVisibility;
   return marker.pageNumber === project.page && marker.verificationStatus !== 'rejected' && (!visibility.verifiedOnly || marker.verificationStatus === 'verified')
     && (marker.classification === 'supply' ? visibility.showSupply : marker.classification === 'extract' ? visibility.showExtract : visibility.showUncertain);
+}
+
+type AirflowSelectionScope = 'page' | 'route' | 'visible' | 'project';
+
+function airflowScopeLabel(scope = els.airflowSelectionScope.value as AirflowSelectionScope): string {
+  return scope === 'route' ? 'Selected duct' : scope === 'visible' ? 'Visible area' : scope === 'project' ? 'Entire project' : 'Current page';
+}
+
+function visiblePdfBounds(): { left: number; top: number; right: number; bottom: number } | null {
+  if (!pdfPage || !renderScale) return null;
+  const viewer = els.viewerScroll.getBoundingClientRect(); const canvas = els.overlayCanvas.getBoundingClientRect();
+  return {
+    left: Math.max(0, viewer.left - canvas.left) / renderScale,
+    top: Math.max(0, viewer.top - canvas.top) / renderScale,
+    right: Math.min(canvas.width, viewer.right - canvas.left) / renderScale,
+    bottom: Math.min(canvas.height, viewer.bottom - canvas.top) / renderScale,
+  };
+}
+
+function markerInSelectionScope(marker: AirflowMarker): boolean {
+  const scope = els.airflowSelectionScope.value as AirflowSelectionScope;
+  if (marker.verificationStatus === 'rejected') return false;
+  if (scope === 'project') return true;
+  if (marker.pageNumber !== project.page) return false;
+  if (scope === 'route') return Boolean(selectedRouteId && marker.nearestRouteId === selectedRouteId);
+  if (scope === 'visible') {
+    const bounds = visiblePdfBounds();
+    return Boolean(bounds && marker.tip.x >= bounds.left && marker.tip.x <= bounds.right && marker.tip.y >= bounds.top && marker.tip.y <= bounds.bottom);
+  }
+  return true;
+}
+
+function clearAirflowSelection(notify = true): void {
+  selectedAirflowIds.clear(); focusedAirflowId = null; airflowSelectionCursor = 0; renderUi();
+  if (notify) status('Airflow selection cleared.');
+}
+
+function selectAirflowClassification(classification: 'supply' | 'extract'): void {
+  const matches = project.airflowMarkers.filter((marker) => marker.classification === classification && markerInSelectionScope(marker));
+  selectedAirflowIds = new Set(matches.map((marker) => marker.id)); focusedAirflowId = matches[0]?.id ?? null; airflowSelectionCursor = 0;
+  const name = classification === 'supply' ? 'Tulo' : 'Poisto'; const scope = airflowScopeLabel();
+  if (!matches.length) {
+    const reason = els.airflowSelectionScope.value === 'route' && !selectedRouteId ? ' Select a duct route or change scope.' : '';
+    status(`No ${name} markers found in ${scope.toLowerCase()}.${reason}`); toast(`No ${name} markers in ${scope.toLowerCase()}`);
+  } else {
+    const hidden = matches.filter((marker) => !visibleAirflow(marker)).length;
+    status(`${matches.length} ${name} marker${matches.length === 1 ? '' : 's'} selected (${scope}).${hidden ? ` ${hidden} hidden by page or visibility filters.` : ''}`);
+    toast(`${matches.length} ${name} marker${matches.length === 1 ? '' : 's'} selected`);
+  }
+  renderUi();
+}
+
+function showSelectedAirflow(): void {
+  const selected = project.airflowMarkers.filter((marker) => selectedAirflowIds.has(marker.id) && marker.pageNumber === project.page && marker.verificationStatus !== 'rejected');
+  if (!selected.length) { status('Selected airflow markers are on another page or no longer active.'); return; }
+  if (selected.some((marker) => marker.classification === 'supply')) project.airflowVisibility.showSupply = true;
+  if (selected.some((marker) => marker.classification === 'extract')) project.airflowVisibility.showExtract = true;
+  if (selected.some((marker) => marker.classification === 'uncertain')) project.airflowVisibility.showUncertain = true;
+  project.airflowVisibility.verifiedOnly = false; markChanged(); status('Selected marker visibility filters were enabled.');
+}
+
+async function fitAirflowMarkers(markers: AirflowMarker[]): Promise<void> {
+  const pageMarkers = markers.filter((marker) => marker.pageNumber === project.page && marker.verificationStatus !== 'rejected');
+  if (!pdfPage || !pageMarkers.length) { status('No selected airflow markers are available on the current PDF page.'); return; }
+  const points = pageMarkers.flatMap((marker) => [marker.tail, marker.tip]);
+  const left = Math.min(...points.map((point) => point.x)); const right = Math.max(...points.map((point) => point.x));
+  const top = Math.min(...points.map((point) => point.y)); const bottom = Math.max(...points.map((point) => point.y));
+  const width = Math.max(40, right - left); const height = Math.max(40, bottom - top);
+  const desiredScale = Math.min((els.viewerScroll.clientWidth - 100) / width, (els.viewerScroll.clientHeight - 100) / height);
+  zoomFactor = Math.max(.25, Math.min(6, desiredScale / Math.max(.001, fitScale))); await renderPage();
+  els.viewerScroll.scrollLeft = Math.max(0, els.canvasStage.offsetLeft + ((left + right) / 2) * renderScale - els.viewerScroll.clientWidth / 2);
+  els.viewerScroll.scrollTop = Math.max(0, els.canvasStage.offsetTop + ((top + bottom) / 2) * renderScale - els.viewerScroll.clientHeight / 2);
+  drawOverlay();
+}
+
+function cycleSelectedAirflow(direction: 1 | -1): void {
+  const selected = project.airflowMarkers.filter((marker) => selectedAirflowIds.has(marker.id)).sort((a, b) => a.pageNumber - b.pageNumber || a.tip.y - b.tip.y || a.tip.x - b.tip.x);
+  if (!selected.length) return;
+  airflowSelectionCursor = (airflowSelectionCursor + direction + selected.length) % selected.length; const marker = selected[airflowSelectionCursor]; focusedAirflowId = marker.id;
+  const focus = async (): Promise<void> => { await fitAirflowMarkers([marker]); status(`Focused selected marker ${airflowSelectionCursor + 1} of ${selected.length}: ${airflowLabel(marker.classification)}.`); renderUi(); };
+  if (marker.pageNumber !== project.page && pdfDoc) void openPage(marker.pageNumber, true).then(focus).catch((error: unknown) => { console.error(error); toast('Could not open the selected marker page'); }); else void focus();
 }
 
 function hitAirflow(point: Point): AirflowMarker | null {
@@ -623,16 +718,20 @@ function nearbyMarkersForLabel(location: DetectionLocation): AirflowMarker[] {
 function renderAirflowReview(): void {
   const active = project.airflowMarkers.filter((marker) => marker.verificationStatus !== 'rejected'); const filter = els.airflowFilter.value;
   let shown = active.filter((marker) => filter === 'all' || marker.classification === filter || marker.verificationStatus === filter);
-  const sort = els.airflowSort.value; shown = [...shown].sort((a, b) => sort === 'confidence' ? b.confidence - a.confidence : sort === 'classification' ? a.classification.localeCompare(b.classification) : sort === 'duct' ? (a.nearestRouteId ?? a.temporaryAxisId ?? '').localeCompare(b.nearestRouteId ?? b.temporaryAxisId ?? '') : a.pageNumber - b.pageNumber || a.tip.y - b.tip.y || a.tip.x - b.tip.x);
-  els.airflowReviewCount.textContent = `${shown.length} shown`; els.airflowCount.textContent = `${active.length} point${active.length === 1 ? '' : 's'}`;
+  const sort = els.airflowSort.value; shown = [...shown].sort((a, b) => Number(selectedAirflowIds.has(b.id)) - Number(selectedAirflowIds.has(a.id)) || (sort === 'confidence' ? b.confidence - a.confidence : sort === 'classification' ? a.classification.localeCompare(b.classification) : sort === 'duct' ? (a.nearestRouteId ?? a.temporaryAxisId ?? '').localeCompare(b.nearestRouteId ?? b.temporaryAxisId ?? '') : a.pageNumber - b.pageNumber || a.tip.y - b.tip.y || a.tip.x - b.tip.x));
+  const selected = project.airflowMarkers.filter((marker) => selectedAirflowIds.has(marker.id)); const hasSelection = selected.length > 0; const hiddenSelected = selected.filter((marker) => !visibleAirflow(marker)).length;
+  els.airflowReviewCount.textContent = `${shown.length} shown · ${selected.length} selected`; els.airflowCount.textContent = `${active.length} point${active.length === 1 ? '' : 's'}`;
   const totalSupply = active.filter((marker) => marker.classification === 'supply').length; const totalExtract = active.filter((marker) => marker.classification === 'extract').length; const totalUncertain = active.filter((marker) => marker.classification === 'uncertain').length; const verified = active.filter((marker) => marker.verificationStatus === 'verified').length;
-  els.airflowTotals.innerHTML = `<div><b>${totalSupply}</b><span>Tulo</span></div><div><b>${totalExtract}</b><span>Poisto</span></div><div><b>${totalUncertain}</b><span>Uncertain</span></div><div><b>${verified}/${active.length}</b><span>Verified</span></div>`;
-  const selected = project.airflowMarkers.filter((marker) => selectedAirflowIds.has(marker.id)); const hasSelection = selected.length > 0;
+  els.airflowTotals.innerHTML = `<button type="button" data-airflow-classification="supply" aria-label="Select all Tulo markers in the current scope"><b>${totalSupply}</b><span>Tulo</span></button><button type="button" data-airflow-classification="extract" aria-label="Select all Poisto markers in the current scope"><b>${totalExtract}</b><span>Poisto</span></button><button type="button" data-airflow-filter="uncertain"><b>${totalUncertain}</b><span>Uncertain</span></button><button type="button" data-airflow-filter="verified"><b>${verified}/${active.length}</b><span>Verified</span></button>`;
+  els.airflowSelectionScopeStatus.textContent = `Scope: ${airflowScopeLabel()}${els.airflowSelectionScope.value === 'route' ? selectedRouteId ? ` · ${project.routes.find((route) => route.id === selectedRouteId)?.size ?? 'selected route'}` : ' · no duct selected' : ''}`;
+  els.airflowSelectionStatus.textContent = hasSelection ? `${selected.length} marker${selected.length === 1 ? '' : 's'} selected${hiddenSelected ? ` · ${hiddenSelected} hidden by current page or visibility filters` : ''}.` : 'No airflow markers selected.';
+  els.showSelectedAirflowBtn.classList.toggle('hidden', !hiddenSelected); els.clearAirflowSelectionBtn.disabled = !hasSelection;
   [els.verifyAirflowBtn, els.flipAirflowBtn, els.rejectAirflowBtn, els.deleteAirflowBtn, els.setSupplyBtn, els.setExtractBtn, els.setUncertainBtn, els.updateAirflowBtn].forEach((button) => { button.disabled = !hasSelection; }); els.associateLabelBtn.disabled = !hasSelection || !selectedLabelModel; els.scanSimilarBtn.disabled = selected.length !== 1 || selected[0]?.verificationStatus !== 'verified';
+  [els.fitSelectedAirflowBtn, els.previousSelectedAirflowBtn, els.nextSelectedAirflowBtn, els.clearReviewSelectionBtn].forEach((button) => { button.disabled = !hasSelection; });
   const routeOptions = project.routes.filter((route) => route.page === project.page).map((route) => `<option value="${route.id}">Route ${escapeHtml(route.size || route.id)} · ${escapeHtml(route.system)}</option>`); const axisOptions = project.temporaryDuctAxes.filter((axis) => axis.pageNumber === project.page).map((axis, index) => `<option value="${axis.id}">Temporary axis ${index + 1}</option>`);
   els.airflowRoute.innerHTML = `<option value="">Keep automatic association</option>${routeOptions.join('')}${axisOptions.join('')}`; els.airflowRoute.disabled = !hasSelection;
   if (selected.length === 1) { els.airflowModel.value = selected[0].deviceModel ?? ''; els.airflowNotes.value = selected[0].notes; els.airflowRoute.value = selected[0].nearestRouteId ?? selected[0].temporaryAxisId ?? ''; }
-  els.airflowReviewList.innerHTML = shown.length ? shown.map((marker, index) => `<label class="airflow-review-card ${selectedAirflowIds.has(marker.id) ? 'selected' : ''} ${marker.classification}"><input type="checkbox" data-airflow-select="${marker.id}" ${selectedAirflowIds.has(marker.id) ? 'checked' : ''}><span><b>#${index + 1} ${escapeHtml(airflowLabel(marker.classification))}</b><small>${Math.round(marker.confidence * 100)}% confidence · ${marker.verificationStatus === 'verified' ? 'Vahvistettu / Verified' : 'Ehdotus / Suggestion'} · Page ${marker.pageNumber}</small><small>Duct: ${escapeHtml(marker.nearestRouteId ?? marker.temporaryAxisId ?? 'none')} · ${escapeHtml(marker.source)}${marker.deviceModel ? ` · ${escapeHtml(marker.deviceModel)}` : ''}</small><details><summary>Diagnostics</summary><small>angle ${marker.arrowAngleDegrees.toFixed(1)}° · distance ${marker.distanceToDuct.toFixed(2)} pt · dot ${marker.dotProductScore.toFixed(3)}</small></details></span></label>`).join('') : '<div class="empty-mini">No airflow suggestions match this filter.</div>';
+  els.airflowReviewList.innerHTML = shown.length ? shown.map((marker, index) => `<label class="airflow-review-card ${selectedAirflowIds.has(marker.id) ? 'selected' : ''} ${marker.id === focusedAirflowId ? 'focused' : ''} ${marker.classification}"><input type="checkbox" data-airflow-select="${marker.id}" ${selectedAirflowIds.has(marker.id) ? 'checked' : ''}><span><b>#${index + 1} ${escapeHtml(airflowLabel(marker.classification))}${selectedAirflowIds.has(marker.id) ? ' · Selected' : ''}</b><small>${Math.round(marker.confidence * 100)}% confidence · ${marker.verificationStatus === 'verified' ? 'Vahvistettu / Verified' : 'Ehdotus / Suggestion'} · Page ${marker.pageNumber}</small><small>Duct: ${escapeHtml(marker.nearestRouteId ?? marker.temporaryAxisId ?? 'none')} · ${escapeHtml(marker.source)}${marker.deviceModel ? ` · ${escapeHtml(marker.deviceModel)}` : ''}</small><details><summary>Diagnostics</summary><small>angle ${marker.arrowAngleDegrees.toFixed(1)}° · distance ${marker.distanceToDuct.toFixed(2)} pt · dot ${marker.dotProductScore.toFixed(3)}</small></details></span></label>`).join('') : '<div class="empty-mini">No airflow suggestions match this filter.</div>';
   const grouped = new Map<string, { supply: number; extract: number; uncertain: number }>(); active.forEach((marker) => { const key = marker.nearestRouteId ?? marker.temporaryAxisId ?? 'Unassigned'; const value = grouped.get(key) ?? { supply: 0, extract: 0, uncertain: 0 }; value[marker.classification] += 1; grouped.set(key, value); });
   const summaryGroups = new Map<string, { system: string; model: string; page: number; count: number }>(); active.forEach((marker) => { const system = marker.system ?? 'Unassigned'; const model = marker.deviceModel ?? 'No model'; const key = `${system}|${model}|${marker.pageNumber}`; const value = summaryGroups.get(key) ?? { system, model, page: marker.pageNumber, count: 0 }; value.count += 1; summaryGroups.set(key, value); });
   els.airflowGroups.innerHTML = grouped.size ? `<h3>Grouped by duct</h3>${[...grouped].map(([key, value]) => `<button class="airflow-group" data-airflow-group="${escapeHtml(key)}"><b>${escapeHtml(key)}</b><span>${value.supply} Tulo · ${value.extract} Poisto · ${value.uncertain} uncertain</span></button>`).join('')}<h3>System / model / page</h3>${[...summaryGroups.values()].map((value) => `<div class="airflow-group"><b>${escapeHtml(value.system)} · ${escapeHtml(value.model)}</b><span>${value.count} point${value.count === 1 ? '' : 's'} · page ${value.page}</span></div>`).join('')}` : '';
@@ -732,7 +831,7 @@ function exportProject(kind: 'summary' | 'detail' | 'json'): void {
   toast(`${kind === 'json' ? 'JSON' : 'CSV'} export created`);
 }
 
-builderController = initCustomPartBuilder(els.customBuilderWorkspace, { onSave: saveCustomPart, notify: toast });
+builderController = initCustomPartBuilder(els.customBuilderWorkspace, { onSave: saveCustomPart, onChange: updateCustomPartDraft, notify: toast });
 builderController.setActive(false);
 
 document.querySelectorAll<HTMLButtonElement>('[data-workspace]').forEach((button) => button.addEventListener('click', () => switchWorkspace(button.dataset.workspace as 'takeoff' | 'builder' | 'materials')));
@@ -757,12 +856,17 @@ els.markAirflowBtn.addEventListener('click', () => { if (!pdfPage) { toast('Uplo
 els.manualAirflowBtn.addEventListener('click', () => { if (!pdfPage) { toast('Upload a PDF first'); return; } forceManualAirflow = true; airflowDraft = []; setTool('airflow'); status('Manual airflow: click the arrow tail, then the arrow tip.'); });
 els.temporaryAxisBtn.addEventListener('click', () => { if (!pdfPage) { toast('Upload a PDF first'); return; } axisDraft = []; setTool('axis'); });
 els.scanSimilarBtn.addEventListener('click', () => void scanSimilarArrows()); els.cancelAirflowScanBtn.addEventListener('click', () => { scanCancelled = true; status('Cancelling airflow scan…'); });
-els.verifyAirflowBtn.addEventListener('click', () => mutateSelectedAirflow('verify')); els.flipAirflowBtn.addEventListener('click', () => mutateSelectedAirflow('flip')); els.rejectAirflowBtn.addEventListener('click', () => mutateSelectedAirflow('reject')); els.deleteAirflowBtn.addEventListener('click', () => { if (window.confirm('Delete the selected airflow markers?')) mutateSelectedAirflow('delete'); });
+els.verifyAirflowBtn.addEventListener('click', () => mutateSelectedAirflow('verify')); els.flipAirflowBtn.addEventListener('click', () => mutateSelectedAirflow('flip')); els.rejectAirflowBtn.addEventListener('click', () => { if (window.confirm('Reject the selected airflow suggestions? They will be hidden from active totals.')) mutateSelectedAirflow('reject'); }); els.deleteAirflowBtn.addEventListener('click', () => { if (window.confirm('Delete the selected airflow markers?')) mutateSelectedAirflow('delete'); });
 els.setSupplyBtn.addEventListener('click', () => mutateSelectedAirflow('supply')); els.setExtractBtn.addEventListener('click', () => mutateSelectedAirflow('extract')); els.setUncertainBtn.addEventListener('click', () => mutateSelectedAirflow('uncertain')); els.updateAirflowBtn.addEventListener('click', updateSelectedAirflowMetadata); els.associateLabelBtn.addEventListener('click', associatePickedLabel);
-els.selectSupplyBtn.addEventListener('click', () => { selectedAirflowIds = new Set(project.airflowMarkers.filter((marker) => marker.pageNumber === project.page && marker.classification === 'supply' && marker.verificationStatus !== 'rejected').map((marker) => marker.id)); renderUi(); });
-els.selectExtractBtn.addEventListener('click', () => { selectedAirflowIds = new Set(project.airflowMarkers.filter((marker) => marker.pageNumber === project.page && marker.classification === 'extract' && marker.verificationStatus !== 'rejected').map((marker) => marker.id)); renderUi(); });
+els.selectSupplyBtn.addEventListener('click', () => selectAirflowClassification('supply'));
+els.selectExtractBtn.addEventListener('click', () => selectAirflowClassification('extract'));
+els.airflowSelectionScope.addEventListener('change', () => { airflowSelectionScopeTouched = true; renderUi(); status(`Airflow bulk-selection scope changed to ${airflowScopeLabel()}.`); });
+els.clearAirflowSelectionBtn.addEventListener('click', () => clearAirflowSelection()); els.clearReviewSelectionBtn.addEventListener('click', () => clearAirflowSelection());
+els.showSelectedAirflowBtn.addEventListener('click', showSelectedAirflow); els.fitSelectedAirflowBtn.addEventListener('click', () => void fitAirflowMarkers(project.airflowMarkers.filter((marker) => selectedAirflowIds.has(marker.id))));
+els.previousSelectedAirflowBtn.addEventListener('click', () => cycleSelectedAirflow(-1)); els.nextSelectedAirflowBtn.addEventListener('click', () => cycleSelectedAirflow(1));
 els.clearAirflowBtn.addEventListener('click', () => { if (!project.airflowMarkers.length || !window.confirm('Clear all airflow markers and temporary axes? This cannot be undone.')) return; project.airflowMarkers = []; project.temporaryDuctAxes = []; selectedAirflowIds.clear(); markChanged(); toast('Airflow scan cleared'); });
 els.airflowFilter.addEventListener('change', renderUi); els.airflowSort.addEventListener('change', renderUi);
+els.airflowTotals.addEventListener('click', (event) => { const target = (event.target as HTMLElement).closest<HTMLElement>('[data-airflow-classification],[data-airflow-filter]'); if (!target) return; const classification = target.dataset.airflowClassification; if (classification === 'supply' || classification === 'extract') selectAirflowClassification(classification); else if (target.dataset.airflowFilter) { els.airflowFilter.value = target.dataset.airflowFilter; renderUi(); } });
 ([['showSupply', 'showSupply'], ['showExtract', 'showExtract'], ['showUncertain', 'showUncertain'], ['verifiedOnly', 'verifiedOnly'], ['showAirflowLabels', 'showLabels'], ['showAirflowVectors', 'showVectors']] as const).forEach(([elementKey, setting]) => { els[elementKey].addEventListener('change', () => { project.airflowVisibility[setting] = els[elementKey].checked; markChanged(); }); });
 els.zoomInBtn.addEventListener('click', () => { zoomFactor = Math.min(6, zoomFactor * 1.25); void renderPage(); }); els.zoomOutBtn.addEventListener('click', () => { zoomFactor = Math.max(0.25, zoomFactor / 1.25); void renderPage(); }); els.fitBtn.addEventListener('click', () => void fitAndRender()); els.undoBtn.addEventListener('click', undo); els.redoBtn.addEventListener('click', redo);
 els.pageSelect.addEventListener('change', () => { const page = Number(els.pageSelect.value); void openPage(page, true).then(() => { markChanged(); status(`Viewing page ${page}.`); }).catch((error: unknown) => { console.error(error); toast('Could not open that page'); }); });
@@ -794,7 +898,7 @@ els.overlayCanvas.addEventListener('pointercancel', () => { panState = null; els
 els.overlayCanvas.addEventListener('dblclick', (event) => { if (tool === 'trace') { event.preventDefault(); if (currentTrace.length > 2) currentTrace.pop(); finishTrace(); } });
 els.viewerScroll.addEventListener('wheel', (event) => { if (!event.ctrlKey || !pdfPage) return; event.preventDefault(); zoomFactor = Math.max(0.25, Math.min(6, zoomFactor * (event.deltaY < 0 ? 1.15 : 1 / 1.15))); void renderPage(); }, { passive: false });
 els.detectionList.addEventListener('click', (event) => { const target = event.target as HTMLElement; const accept = target.dataset.accept; const reject = target.dataset.reject; if (accept) acceptDetection(accept); if (reject) rejectDetection(reject); });
-els.airflowReviewList.addEventListener('change', (event) => { const input = (event.target as HTMLElement).closest<HTMLInputElement>('[data-airflow-select]'); if (!input) return; if (input.checked) selectedAirflowIds.add(input.dataset.airflowSelect ?? ''); else selectedAirflowIds.delete(input.dataset.airflowSelect ?? ''); renderUi(); });
+els.airflowReviewList.addEventListener('change', (event) => { const input = (event.target as HTMLElement).closest<HTMLInputElement>('[data-airflow-select]'); if (!input) return; const id = input.dataset.airflowSelect ?? ''; if (input.checked) { selectedAirflowIds.add(id); focusedAirflowId = id; } else { selectedAirflowIds.delete(id); if (focusedAirflowId === id) focusedAirflowId = null; } renderUi(); });
 els.airflowGroups.addEventListener('click', (event) => { const target = (event.target as HTMLElement).closest<HTMLButtonElement>('[data-airflow-group]'); if (!target) return; const id = target.dataset.airflowGroup; selectedAirflowIds = new Set(project.airflowMarkers.filter((marker) => marker.nearestRouteId === id || marker.temporaryAxisId === id).map((marker) => marker.id)); const route = project.routes.find((item) => item.id === id); if (route) selectRoute(route); else renderUi(); });
 els.selectedLabelPanel.addEventListener('click', (event) => { const target = event.target as HTMLElement; if (target.dataset.addPicked === 'one') addPickedLabel(false); if (target.dataset.addPicked === 'all') addPickedLabel(true); if (target.dataset.selectNearby !== undefined) { const location = labelLocations.find((item) => item.id === selectedLabelId); if (location) { selectedAirflowIds = new Set(nearbyMarkersForLabel(location).map((marker) => marker.id)); renderUi(); } } if (target.dataset.ignorePicked !== undefined) { selectedLabelModel = null; selectedLabelId = null; renderUi(); } });
 els.detailList.addEventListener('click', (event) => { const target = (event.target as HTMLElement).closest<HTMLElement>('[data-route],[data-part],[data-custom]'); if (!target) return; if (target.dataset.route) selectRoute(project.routes.find((route) => route.id === target.dataset.route) ?? null); if (target.dataset.part) { const part = project.parts.find((item) => item.id === target.dataset.part); if (part) selectPart(part); } if (target.dataset.custom) editCustomPart(target.dataset.custom); });
@@ -809,7 +913,7 @@ document.addEventListener('keydown', (event) => {
   else if (event.key === 'Escape' && tool === 'calibrate') { calibrationPoints = []; setTool('pan'); toast('Calibration cancelled'); }
   else if (event.key === 'Escape' && (tool === 'airflow' || tool === 'axis' || tool === 'label')) { airflowDraft = []; axisDraft = []; setTool('pan'); toast('Airflow action cancelled'); }
   else if (event.key === 'Backspace' && tool === 'trace') { event.preventDefault(); currentTrace.pop(); renderUi(); }
-  else if (event.key === 'Delete' && selectedAirflowIds.size) { event.preventDefault(); mutateSelectedAirflow('delete'); }
+  else if (event.key === 'Delete' && selectedAirflowIds.size) { event.preventDefault(); if (window.confirm('Delete the selected airflow markers?')) mutateSelectedAirflow('delete'); }
   else if (event.key === 'Delete' && (selectedRouteId || selectedPartId)) { event.preventDefault(); deleteSelection(); }
 });
 window.addEventListener('resize', () => { if (pdfPage && Math.abs(zoomFactor - 1) < 0.01) void fitAndRender(); });

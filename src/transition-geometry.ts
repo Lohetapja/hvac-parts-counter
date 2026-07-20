@@ -13,6 +13,9 @@ export interface TransitionGeometry {
 }
 
 export type ValidationErrors = Partial<Record<keyof CustomPart, string>>;
+export type EditableDimensionKey = 'endAWidthMm' | 'endAHeightMm' | 'endBWidthMm' | 'endBHeightMm' | 'endADiameterMm' | 'endBDiameterMm' | 'lengthMm' | 'horizontalOffsetMm' | 'verticalOffsetMm' | 'outletHorizontalAngleDeg' | 'outletVerticalAngleDeg' | 'outletRotationDeg';
+export type DerivedEdgeKind = 'top-edge' | 'side-edge' | 'corner-edge';
+export interface EdgeLengthSolution { bodyLengthMm?: number; minimumTargetMm: number; error?: string }
 const MAX_DIMENSION_MM = 20_000; const RING_POINTS = 24;
 
 export function validateCustomPart(part: CustomPart): ValidationErrors {
@@ -40,6 +43,16 @@ export function validateCustomPart(part: CustomPart): ValidationErrors {
   else if (part.thicknessMm > 20) errors.thicknessMm = 'Maximum thickness is 20 mm.';
   if (!part.name.trim()) errors.name = 'Enter a part name.';
   return errors;
+}
+
+export function dimensionLabel(key: EditableDimensionKey): string {
+  const labels: Record<EditableDimensionKey, string> = { endAWidthMm: 'End A width', endAHeightMm: 'End A height', endBWidthMm: 'End B width', endBHeightMm: 'End B height', endADiameterMm: 'End A diameter', endBDiameterMm: 'End B diameter', lengthMm: 'Body length', horizontalOffsetMm: 'Horizontal offset', verticalOffsetMm: 'Vertical offset', outletHorizontalAngleDeg: 'Horizontal outlet angle', outletVerticalAngleDeg: 'Vertical outlet angle', outletRotationDeg: 'Outlet-axis rotation' };
+  return labels[key];
+}
+export function dimensionUnit(key: EditableDimensionKey): 'mm' | '°' { return key.includes('Angle') || key === 'outletRotationDeg' ? '°' : 'mm'; }
+export function validateDimensionValue(part: CustomPart, key: EditableDimensionKey, value: number): string | null {
+  if (!Number.isFinite(value)) return 'Enter a finite number.';
+  const candidate = { ...part, [key]: value }; return validateCustomPart(candidate)[key] ?? null;
 }
 
 function add(a: Vector3, b: Vector3): Vector3 { return { x: a.x + b.x, y: a.y + b.y, z: a.z + b.z }; }
@@ -85,6 +98,19 @@ export function buildTransitionGeometry(part: CustomPart): TransitionGeometry {
   const areaMm2 = sideFaces.reduce((sum, [a, b, c, d]) => sum + triangleArea(vertices[a], vertices[b], vertices[c]) + triangleArea(vertices[a], vertices[c], vertices[d]), 0);
   const ports = buildCustomPartAssembly(part).ports as [ConnectionPort, ConnectionPort];
   return { vertices, sideFaces, endRings, ports, centrelineLengthMm: Math.hypot(part.lengthMm, part.horizontalOffsetMm, part.verticalOffsetMm), cornerEdgeLengthsMm, surfaceAreaM2: areaMm2 / 1_000_000 };
+}
+
+export function solveBodyLengthFromEdge(part: CustomPart, kind: DerivedEdgeKind, targetLengthMm: number, edgeIndex = 0): EdgeLengthSolution {
+  const geometry = buildTransitionGeometry(part); const index = ((edgeIndex % 24) + 24) % 24; const start = geometry.vertices[geometry.endRings[0][index]]; const end = geometry.vertices[geometry.endRings[1][index]];
+  const deltaX = end.x - start.x; const deltaY = end.y - start.y; const axialLocal = end.z - start.z - part.lengthMm;
+  const fixedSquared = kind === 'top-edge' ? deltaX * deltaX : kind === 'side-edge' ? deltaY * deltaY : deltaX * deltaX + deltaY * deltaY;
+  const minimumTargetMm = Math.sqrt(fixedSquared + Math.max(0, axialLocal) ** 2);
+  if (!Number.isFinite(targetLengthMm) || targetLengthMm < minimumTargetMm || (Math.abs(targetLengthMm - minimumTargetMm) < .000001 && axialLocal >= 0)) return { minimumTargetMm, error: `Enter an edge length greater than ${minimumTargetMm.toFixed(1)} mm.` };
+  const axialSquared = targetLengthMm * targetLengthMm - fixedSquared;
+  if (axialSquared < -.000001) return { minimumTargetMm, error: `No real body length exists below ${minimumTargetMm.toFixed(1)} mm.` };
+  const bodyLengthMm = Math.sqrt(Math.max(0, axialSquared)) - axialLocal;
+  if (!Number.isFinite(bodyLengthMm) || bodyLengthMm <= 0 || bodyLengthMm > MAX_DIMENSION_MM) return { minimumTargetMm, error: `The solved body length must be greater than zero and at most ${MAX_DIMENSION_MM.toLocaleString()} mm.` };
+  return { minimumTargetMm, bodyLengthMm };
 }
 
 export function classifyTransition(part: CustomPart): string {

@@ -1,0 +1,22 @@
+{
+  "name": "hvac-parts-counter",
+  "version": "0.1.0",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "Local-first assisted HVAC PDF takeoff and parts counting MVP",
+  "dependencies": {
+    "pdfjs-dist": "^6.1.200"
+  },
+  "devDependencies": {
+    "typescript": "^7.0.2",
+    "vite": "^8.1.5"
+  },
+  "private": true,
+  "type": "module"
+}

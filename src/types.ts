@@ -3,6 +3,7 @@ export type DuctShape = 'round' | 'rectangular';
 export type Tool = 'pan' | 'calibrate' | 'trace';
 export type VerificationStatus = 'suggested' | 'verified';
 export type PartSource = 'manual' | 'detected';
+export type CustomPartType = 'rectangular-transition';
 
 export interface RouteItem {
   id: string;
@@ -46,8 +47,29 @@ export interface DrawingIdentity {
   pageCount: number;
 }
 
+export interface CustomPart {
+  id: string;
+  name: string;
+  partType: CustomPartType;
+  endAWidthMm: number;
+  endAHeightMm: number;
+  endBWidthMm: number;
+  endBHeightMm: number;
+  lengthMm: number;
+  horizontalOffsetMm: number;
+  verticalOffsetMm: number;
+  quantity: number;
+  system: string;
+  material: string;
+  thicknessMm: number;
+  notes: string;
+  createdAt: string;
+  updatedAt: string;
+  verificationStatus: VerificationStatus;
+}
+
 export interface ProjectData {
-  version: 2;
+  version: 3;
   projectName: string;
   drawing: DrawingIdentity | null;
   page: number;
@@ -56,6 +78,7 @@ export interface ProjectData {
   calibration: Calibration;
   routes: RouteItem[];
   parts: PartItem[];
+  customParts: CustomPart[];
   rejectedDetectionIds: string[];
   createdAt: string;
   updatedAt: string;

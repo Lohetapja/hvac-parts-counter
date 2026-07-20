@@ -4,7 +4,8 @@ import { detectLabels, type PdfTextItem } from './detection';
 import { exportDate, makeDetailedCsv, makeSummaryCsv, safeFileBase } from './export';
 import { distanceToSegment, PDF_POINT_MM, polylinePdfDistance, presetMmPerPdfPoint, routeLengthM, snapPoint } from './measurements';
 import { clearSavedProject, loadProject, saveProject } from './storage';
-import type { DetectionSuggestion, PartItem, Point, ProjectData, RouteItem, Tool } from './types';
+import { initCustomPartBuilder } from './custom-part-builder';
+import type { CustomPart, DetectionSuggestion, PartItem, Point, ProjectData, RouteItem, Tool } from './types';
 import './styles.css';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
@@ -19,8 +20,8 @@ function uid(prefix: string): string { return `${prefix}-${Date.now()}-${Math.ra
 function freshProject(): ProjectData {
   const timestamp = now();
   return {
-    version: 2, projectName: 'Tomorrow HVAC Takeoff', drawing: null, page: 1, scaleRatio: 50, customScaleRatio: 50,
-    calibration: { mode: 'preset', mmPerPdfPoint: presetMmPerPdfPoint(50) }, routes: [], parts: [],
+    version: 3, projectName: 'Tomorrow HVAC Takeoff', drawing: null, page: 1, scaleRatio: 50, customScaleRatio: 50,
+    calibration: { mode: 'preset', mmPerPdfPoint: presetMmPerPdfPoint(50) }, routes: [], parts: [], customParts: [],
     rejectedDetectionIds: [], createdAt: timestamp, updatedAt: timestamp,
   };
 }
@@ -39,6 +40,7 @@ interface HistoryState { routes: RouteItem[]; parts: PartItem[] }
 interface HistoryEntry { before: HistoryState; after: HistoryState }
 
 let project = loadProject() ?? freshProject();
+project.customParts ??= [];
 let pdfDoc: pdfjsLib.PDFDocumentProxy | null = null;
 let pdfPage: pdfjsLib.PDFPageProxy | null = null;
 let pdfLoadingTask: ReturnType<typeof pdfjsLib.getDocument> | null = null;
@@ -60,6 +62,8 @@ let panState: { x: number; y: number; left: number; top: number } | null = null;
 let undoStack: HistoryEntry[] = [];
 let redoStack: HistoryEntry[] = [];
 let saveTimer = 0;
+let activeWorkspace: 'takeoff' | 'builder' | 'materials' = 'takeoff';
+let builderController: ReturnType<typeof initCustomPartBuilder>;
 
 const app = document.querySelector<HTMLDivElement>('#app');
 if (!app) throw new Error('Missing #app root');
@@ -67,14 +71,14 @@ app.innerHTML = `
 <div class="app-shell">
   <header class="topbar">
     <div class="brand"><div class="brand-mark">HV</div><div><h1>HVAC Parts Counter</h1><p>Local assisted PDF takeoff</p></div></div>
-    <div class="workflow" aria-label="Workflow"><span data-step="upload">1 Upload</span><span data-step="calibrate">2 Calibrate</span><span data-step="measure">3 Measure</span><span data-step="parts">4 Add parts</span><span data-step="export">5 Export</span></div>
+    <nav class="workspace-tabs" aria-label="Major workspaces"><button class="active" data-workspace="takeoff">Drawing Takeoff</button><button data-workspace="builder">Custom Part Builder</button><button data-workspace="materials">Material List <span id="materialNavCount">0</span></button></nav>
     <div class="top-actions">
       <input id="pdfInput" class="file-input" type="file" accept="application/pdf,.pdf">
       <button id="uploadBtn" class="btn primary">Upload PDF</button><button id="saveBtn" class="btn">Save project</button>
       <button id="restoreBtn" class="btn">Restore saved</button><button id="newBtn" class="btn ghost">New project</button><button id="clearBtn" class="btn ghost danger">Clear</button>
     </div>
   </header>
-  <main class="workspace">
+  <main id="takeoffWorkspace" class="workspace major-workspace">
     <aside class="sidebar left">
       <section class="panel"><div class="panel-header"><h2>Project</h2><span id="demoBadge" class="badge muted">Not ready</span></div><div class="panel-body">
         <label class="field"><span class="label">Project name</span><input id="projectName" class="input" maxlength="100"></label>
@@ -122,6 +126,12 @@ app.innerHTML = `
       <section class="panel"><div class="panel-header"><h2>Detected labels</h2><button id="scanBtn" class="btn small" disabled>Scan page</button></div><div class="panel-body"><p class="help">Suggestions from PDF text only. Review, edit, accept, or reject.</p><div id="detectionList" class="detection-list"></div></div></section>
     </aside>
   </main>
+  <section id="customBuilderWorkspace" class="major-workspace custom-builder-workspace hidden"></section>
+  <section id="materialWorkspace" class="major-workspace material-workspace hidden">
+    <div class="material-header"><div><span class="eyebrow">Project materials</span><h2>Material List</h2><p>Measured ducts, manual items, detected devices, and parametric custom parts.</p></div><div class="button-row"><button id="materialExportSummary" class="btn">Summary CSV</button><button id="materialExportDetails" class="btn">Details CSV</button><button id="materialExportJson" class="btn">JSON</button></div></div>
+    <div id="materialHeadline" class="material-headline"></div>
+    <div class="material-columns"><section class="panel"><div class="panel-header"><h2>Ducts and standard parts</h2></div><div id="materialStandardList" class="panel-body material-list"></div></section><section class="panel custom-material-panel"><div class="panel-header"><h2>Custom parametric parts</h2><button id="materialNewCustom" class="btn small primary">New custom part</button></div><div id="materialCustomList" class="panel-body material-list"></div></section></div>
+  </section>
 </div><div id="toast" class="toast"></div>`;
 
 function byId<T extends HTMLElement>(id: string): T {
@@ -138,11 +148,62 @@ const els = {
   partCategory: byId<HTMLSelectElement>('partCategory'), partModel: byId<HTMLInputElement>('partModel'), partSize: byId<HTMLInputElement>('partSize'), partQuantity: byId<HTMLInputElement>('partQuantity'), partSystem: byId<HTMLSelectElement>('partSystem'), partLength: byId<HTMLInputElement>('partLength'), partStatus: byId<HTMLSelectElement>('partStatus'), partNotes: byId<HTMLInputElement>('partNotes'), addPartBtn: byId<HTMLButtonElement>('addPartBtn'), updatePartBtn: byId<HTMLButtonElement>('updatePartBtn'), deletePartBtn: byId<HTMLButtonElement>('deletePartBtn'),
   viewerScroll: byId<HTMLDivElement>('viewerScroll'), canvasStage: byId<HTMLDivElement>('canvasStage'), emptyState: byId<HTMLDivElement>('emptyState'), pdfCanvas: byId<HTMLCanvasElement>('pdfCanvas'), overlayCanvas: byId<HTMLCanvasElement>('overlayCanvas'), zoomOutBtn: byId<HTMLButtonElement>('zoomOutBtn'), zoomInBtn: byId<HTMLButtonElement>('zoomInBtn'), fitBtn: byId<HTMLButtonElement>('fitBtn'), zoomReadout: byId<HTMLSpanElement>('zoomReadout'), undoBtn: byId<HTMLButtonElement>('undoBtn'), redoBtn: byId<HTMLButtonElement>('redoBtn'), progress: byId<HTMLDivElement>('progress'), statusText: byId<HTMLSpanElement>('statusText'),
   totalDuct: byId<HTMLElement>('totalDuct'), totalRoutes: byId<HTMLElement>('totalRoutes'), totalFittings: byId<HTMLElement>('totalFittings'), totalDevices: byId<HTMLElement>('totalDevices'), unverifiedCount: byId<HTMLElement>('unverifiedCount'), ductSummary: byId<HTMLDivElement>('ductSummary'), partSummary: byId<HTMLDivElement>('partSummary'), detailList: byId<HTMLDivElement>('detailList'), scanBtn: byId<HTMLButtonElement>('scanBtn'), detectionList: byId<HTMLDivElement>('detectionList'), exportSummaryBtn: byId<HTMLButtonElement>('exportSummaryBtn'), exportDetailBtn: byId<HTMLButtonElement>('exportDetailBtn'), exportJsonBtn: byId<HTMLButtonElement>('exportJsonBtn'), toast: byId<HTMLDivElement>('toast'),
+  takeoffWorkspace: byId<HTMLElement>('takeoffWorkspace'), customBuilderWorkspace: byId<HTMLElement>('customBuilderWorkspace'), materialWorkspace: byId<HTMLElement>('materialWorkspace'), materialNavCount: byId<HTMLElement>('materialNavCount'), materialHeadline: byId<HTMLDivElement>('materialHeadline'), materialStandardList: byId<HTMLDivElement>('materialStandardList'), materialCustomList: byId<HTMLDivElement>('materialCustomList'), materialNewCustom: byId<HTMLButtonElement>('materialNewCustom'), materialExportSummary: byId<HTMLButtonElement>('materialExportSummary'), materialExportDetails: byId<HTMLButtonElement>('materialExportDetails'), materialExportJson: byId<HTMLButtonElement>('materialExportJson'),
 };
 
 function toast(message: string): void { els.toast.textContent = message; els.toast.classList.add('show'); window.setTimeout(() => els.toast.classList.remove('show'), 2200); }
 function status(message: string): void { els.statusText.textContent = message; }
 function loading(active: boolean): void { els.progress.classList.toggle('active', active); }
+
+function switchWorkspace(workspace: 'takeoff' | 'builder' | 'materials'): void {
+  activeWorkspace = workspace;
+  els.takeoffWorkspace.classList.toggle('hidden', workspace !== 'takeoff');
+  els.customBuilderWorkspace.classList.toggle('hidden', workspace !== 'builder');
+  els.materialWorkspace.classList.toggle('hidden', workspace !== 'materials');
+  document.querySelectorAll<HTMLButtonElement>('[data-workspace]').forEach((button) => button.classList.toggle('active', button.dataset.workspace === workspace));
+  builderController.setActive(workspace === 'builder');
+  if (workspace === 'materials') renderMaterialWorkspace();
+}
+
+function saveCustomPart(part: CustomPart): void {
+  const existingIndex = project.customParts.findIndex((item) => item.id === part.id);
+  if (existingIndex >= 0) {
+    part.createdAt = project.customParts[existingIndex].createdAt;
+    part.updatedAt = now(); project.customParts[existingIndex] = part; toast('Custom part updated');
+  } else {
+    part.createdAt = now(); part.updatedAt = part.createdAt; project.customParts.push(part); toast('Custom part saved to material list');
+  }
+  markChanged(); switchWorkspace('materials');
+}
+
+function editCustomPart(id: string): void {
+  const part = project.customParts.find((item) => item.id === id); if (!part) return;
+  builderController.load(part); switchWorkspace('builder');
+}
+
+function duplicateCustomPart(id: string): void {
+  const source = project.customParts.find((item) => item.id === id); if (!source) return;
+  const time = now(); const duplicate = structuredClone(source); duplicate.id = uid('custom'); duplicate.name = `${source.name} copy`; duplicate.createdAt = time; duplicate.updatedAt = time;
+  builderController.load(duplicate, false); switchWorkspace('builder'); toast('Duplicate loaded; save it to create a new record');
+}
+
+function deleteCustomPart(id: string): void {
+  const part = project.customParts.find((item) => item.id === id); if (!part) return;
+  if (!window.confirm(`Delete custom part “${part.name}”?`)) return;
+  project.customParts = project.customParts.filter((item) => item.id !== id); markChanged(); toast('Custom part deleted');
+}
+
+function renderMaterialWorkspace(): void {
+  const measuredLength = project.routes.reduce((sum, route) => sum + routeLengthM(route, project), 0);
+  const standardQuantity = project.parts.reduce((sum, part) => sum + part.quantity, 0);
+  const customQuantity = project.customParts.reduce((sum, part) => sum + part.quantity, 0);
+  els.materialNavCount.textContent = String(project.routes.length + standardQuantity + customQuantity);
+  els.materialHeadline.innerHTML = `<div><b>${measuredLength.toFixed(2)} m</b><span>Measured duct</span></div><div><b>${project.routes.length}</b><span>Duct routes</span></div><div><b>${standardQuantity}</b><span>Standard items</span></div><div><b>${customQuantity}</b><span>Custom fittings</span></div>`;
+  const routes = project.routes.map((route) => `<div class="material-card"><div><b>${escapeHtml(route.size)} duct</b><span>${escapeHtml(route.shape)} · ${escapeHtml(route.system)} · ${routeLengthM(route, project).toFixed(2)} m</span></div><strong>1×</strong></div>`);
+  const parts = project.parts.map((part) => `<div class="material-card"><div><b>${escapeHtml(part.category)}${part.model ? ` · ${escapeHtml(part.model)}` : ''}</b><span>${escapeHtml(part.size || 'No size')} · ${escapeHtml(part.system)} · ${part.source}/${part.status}</span></div><strong>${part.quantity}×</strong></div>`);
+  els.materialStandardList.innerHTML = routes.length || parts.length ? [...routes, ...parts].join('') : '<div class="empty-mini">No measured ducts or standard parts yet.</div>';
+  els.materialCustomList.innerHTML = project.customParts.length ? project.customParts.map((part) => `<article class="custom-material-card"><div class="custom-material-main"><span class="badge ${part.verificationStatus === 'suggested' ? 'warning' : ''}">${escapeHtml(part.verificationStatus)}</span><h3>${escapeHtml(part.name)}</h3><p>${part.endAWidthMm}×${part.endAHeightMm} → ${part.endBWidthMm}×${part.endBHeightMm} mm · L${part.lengthMm} · X${part.horizontalOffsetMm > 0 ? '+' : ''}${part.horizontalOffsetMm} · Y${part.verticalOffsetMm > 0 ? '+' : ''}${part.verticalOffsetMm}</p><small>${escapeHtml(part.system)} · ${escapeHtml(part.material)} · ${part.thicknessMm} mm · source: custom-builder</small></div><strong class="material-qty">${part.quantity}×</strong><div class="custom-material-actions"><button class="btn small" data-edit-custom="${part.id}">Open / edit</button><button class="btn small" data-duplicate-custom="${part.id}">Duplicate</button><button class="btn small ghost danger" data-delete-custom="${part.id}">Delete</button></div></article>`).join('') : '<div class="empty-state material-empty"><h2>No custom parts yet</h2><p>Build a rectangular transition once and keep its parameters with this project.</p><button class="btn primary" data-new-custom>Open Custom Part Builder</button></div>';
+}
 function markChanged(): void {
   project.updatedAt = now();
   window.clearTimeout(saveTimer);
@@ -354,13 +415,13 @@ function renderDetections(): void {
 
 function renderUi(): void {
   const totalLength = project.routes.reduce((sum, route) => sum + routeLengthM(route, project), 0) + project.parts.reduce((sum, part) => sum + part.addedLengthM * part.quantity, 0);
-  const fittingQuantity = project.parts.filter((part) => !DEVICE_CATEGORIES.has(part.category)).reduce((sum, part) => sum + part.quantity, 0);
+  const fittingQuantity = project.parts.filter((part) => !DEVICE_CATEGORIES.has(part.category)).reduce((sum, part) => sum + part.quantity, 0) + project.customParts.reduce((sum, part) => sum + part.quantity, 0);
   const deviceQuantity = project.parts.filter((part) => DEVICE_CATEGORIES.has(part.category)).reduce((sum, part) => sum + part.quantity, 0);
   const pendingDetections = detections.filter((item) => !project.parts.some((part) => part.detectionId === item.id)).length;
-  const unverified = project.parts.filter((part) => part.status === 'suggested').reduce((sum, part) => sum + part.quantity, 0) + pendingDetections;
+  const unverified = project.parts.filter((part) => part.status === 'suggested').reduce((sum, part) => sum + part.quantity, 0) + project.customParts.filter((part) => part.verificationStatus === 'suggested').reduce((sum, part) => sum + part.quantity, 0) + pendingDetections;
   els.totalDuct.textContent = `${totalLength.toFixed(2)} m`; els.totalRoutes.textContent = String(project.routes.length); els.totalFittings.textContent = String(fittingQuantity); els.totalDevices.textContent = String(deviceQuantity); els.unverifiedCount.textContent = String(unverified);
   els.fileName.textContent = pdfDoc ? `${project.drawing?.fileName ?? 'PDF'} · ${pdfDoc.numPages} page${pdfDoc.numPages === 1 ? '' : 's'}` : project.drawing ? `${project.drawing.fileName} · reload PDF to view overlays` : 'No PDF loaded.';
-  els.demoBadge.textContent = pdfDoc && (project.routes.length || project.parts.length) ? 'Demo ready' : 'Not ready'; els.demoBadge.classList.toggle('ready', Boolean(pdfDoc && (project.routes.length || project.parts.length)));
+  els.demoBadge.textContent = pdfDoc && (project.routes.length || project.parts.length || project.customParts.length) ? 'Demo ready' : 'Not ready'; els.demoBadge.classList.toggle('ready', Boolean(pdfDoc && (project.routes.length || project.parts.length || project.customParts.length)));
   els.selectionActions.classList.toggle('hidden', !selectedRouteId); els.updatePartBtn.classList.toggle('hidden', !selectedPartId); els.deletePartBtn.classList.toggle('hidden', !selectedPartId); els.addPartBtn.classList.toggle('hidden', Boolean(selectedPartId));
   els.finishTraceBtn.disabled = currentTrace.length < 2; els.undoPointBtn.disabled = currentTrace.length === 0; els.undoBtn.disabled = !undoStack.length; els.redoBtn.disabled = !redoStack.length;
   els.resetCalibrationBtn.disabled = project.calibration.mode === 'preset';
@@ -376,11 +437,13 @@ function renderUi(): void {
   els.ductSummary.innerHTML = ducts.size ? [...ducts.values()].map((item) => `<div class="summary-row"><b>${escapeHtml(item.size)}</b><span>${escapeHtml(item.shape)} · ${escapeHtml(item.system)} · ${item.count} route${item.count === 1 ? '' : 's'}</span><strong>${item.length.toFixed(2)} m</strong></div>`).join('') : '<div class="empty-mini">No duct groups yet.</div>';
   const groups = new Map<string, { label: string; system: string; status: string; quantity: number }>();
   project.parts.forEach((part) => { const key = `${part.category}|${part.model}|${part.size}|${part.system}|${part.status}`; const value = groups.get(key) ?? { label: [part.category, part.model, part.size].filter(Boolean).join(' · '), system: part.system, status: part.status, quantity: 0 }; value.quantity += part.quantity; groups.set(key, value); });
+  project.customParts.forEach((part) => { const key = `custom|${part.name}|${part.system}|${part.verificationStatus}`; const value = groups.get(key) ?? { label: `Custom · ${part.name}`, system: part.system, status: part.verificationStatus, quantity: 0 }; value.quantity += part.quantity; groups.set(key, value); });
   els.partSummary.innerHTML = groups.size ? [...groups.values()].map((item) => `<div class="summary-row"><b>${escapeHtml(item.label)}</b><span>${escapeHtml(item.system)} · ${escapeHtml(item.status)}</span><strong>${item.quantity}×</strong></div>`).join('') : '<div class="empty-mini">No parts or devices yet.</div>';
   const routeCards = project.routes.map((route) => `<button class="item-card selectable ${route.id === selectedRouteId ? 'selected' : ''}" data-route="${route.id}"><span><b>${escapeHtml(route.size)} · ${routeLengthM(route, project).toFixed(2)} m</b><small>${escapeHtml(route.shape)} · ${escapeHtml(route.system)} · Page ${route.page}${route.notes ? ` · ${escapeHtml(route.notes)}` : ''}</small></span></button>`);
   const partCards = project.parts.map((part) => `<button class="item-card selectable ${part.id === selectedPartId ? 'selected' : ''}" data-part="${part.id}"><span><b>${part.quantity}× ${escapeHtml(part.category)}${part.model ? ` · ${escapeHtml(part.model)}` : ''}</b><small>${escapeHtml(part.size || 'No size')} · ${escapeHtml(part.system)} · ${part.source}/${part.status} · Page ${part.page}</small></span></button>`);
-  els.detailList.innerHTML = routeCards.length || partCards.length ? [...routeCards, ...partCards].join('') : '<div class="empty-mini">Trace a route or add a part to build the takeoff.</div>';
-  document.querySelectorAll<HTMLElement>('.workflow span').forEach((step) => { const name = step.dataset.step; const active = name === 'upload' ? Boolean(pdfDoc) : name === 'calibrate' ? project.calibration.mode === 'calibrated' : name === 'measure' ? project.routes.length > 0 : name === 'parts' ? project.parts.length > 0 : false; step.classList.toggle('done', active); });
+  const customCards = project.customParts.map((part) => `<button class="item-card selectable" data-custom="${part.id}"><span><b>${part.quantity}× Custom · ${escapeHtml(part.name)}</b><small>${part.endAWidthMm}×${part.endAHeightMm} → ${part.endBWidthMm}×${part.endBHeightMm} · L${part.lengthMm} · X${part.horizontalOffsetMm} · Y${part.verticalOffsetMm}</small></span></button>`);
+  els.detailList.innerHTML = routeCards.length || partCards.length || customCards.length ? [...routeCards, ...partCards, ...customCards].join('') : '<div class="empty-mini">Trace a route or add a part to build the takeoff.</div>';
+  renderMaterialWorkspace();
   drawOverlay();
 }
 
@@ -388,16 +451,18 @@ function restoreSaved(notify = true): void {
   const saved = loadProject(); if (!saved) { if (notify) toast('No saved project found'); return; }
   if (pdfDoc && project.drawing && saved.drawing && project.drawing.fingerprint !== saved.drawing.fingerprint && !window.confirm(`The open PDF is “${project.drawing.fileName}”, but the saved takeoff belongs to “${saved.drawing.fileName}”. Restore its overlays anyway?`)) return;
   project = saved; selectedRouteId = null; selectedPartId = null; undoStack = []; redoStack = [];
+  project.customParts ??= [];
+  builderController.load();
   els.projectName.value = project.projectName; els.scalePreset.value = [20, 50, 100, 200].includes(project.scaleRatio) ? String(project.scaleRatio) : 'custom'; els.customScale.value = String(project.customScaleRatio || project.scaleRatio); els.customScaleField.classList.toggle('hidden', els.scalePreset.value !== 'custom');
   els.savedStatus.textContent = `Restored ${new Date(project.updatedAt).toLocaleString()}`; renderUi(); if (notify) toast('Saved project restored — reload its PDF to view the drawing');
 }
 function newProject(): void {
-  if ((project.routes.length || project.parts.length) && !window.confirm('Start a new project? Unsaved takeoff changes will be replaced.')) return;
-  project = freshProject(); selectedRouteId = null; selectedPartId = null; undoStack = []; redoStack = []; detections = []; currentTrace = []; calibrationPoints = []; els.projectName.value = project.projectName; els.scalePreset.value = '50'; els.customScale.value = '50'; renderDetections(); markChanged(); toast('New project started');
+  if ((project.routes.length || project.parts.length || project.customParts.length) && !window.confirm('Start a new project? Unsaved takeoff changes will be replaced.')) return;
+  project = freshProject(); selectedRouteId = null; selectedPartId = null; undoStack = []; redoStack = []; detections = []; currentTrace = []; calibrationPoints = []; builderController.load(); els.projectName.value = project.projectName; els.scalePreset.value = '50'; els.customScale.value = '50'; renderDetections(); markChanged(); toast('New project started');
 }
 function clearProject(): void {
   if (!window.confirm('Clear this project and its locally saved takeoff data? This cannot be undone.')) return;
-  project = freshProject(); clearSavedProject(); selectedRouteId = null; selectedPartId = null; undoStack = []; redoStack = []; detections = []; currentTrace = []; calibrationPoints = []; els.projectName.value = project.projectName; els.savedStatus.textContent = 'Local project cleared'; renderDetections(); renderUi(); toast('Project data cleared');
+  project = freshProject(); clearSavedProject(); selectedRouteId = null; selectedPartId = null; undoStack = []; redoStack = []; detections = []; currentTrace = []; calibrationPoints = []; builderController.load(); els.projectName.value = project.projectName; els.savedStatus.textContent = 'Local project cleared'; renderDetections(); renderUi(); toast('Project data cleared');
 }
 function exportProject(kind: 'summary' | 'detail' | 'json'): void {
   project.projectName = els.projectName.value.trim() || project.projectName; const base = `${safeFileBase(project.projectName)}-${exportDate()}`;
@@ -406,6 +471,20 @@ function exportProject(kind: 'summary' | 'detail' | 'json'): void {
   else download(`${base}.json`, JSON.stringify(project, null, 2), 'application/json');
   toast(`${kind === 'json' ? 'JSON' : 'CSV'} export created`);
 }
+
+builderController = initCustomPartBuilder(els.customBuilderWorkspace, { onSave: saveCustomPart, notify: toast });
+builderController.setActive(false);
+
+document.querySelectorAll<HTMLButtonElement>('[data-workspace]').forEach((button) => button.addEventListener('click', () => switchWorkspace(button.dataset.workspace as 'takeoff' | 'builder' | 'materials')));
+els.materialNewCustom.addEventListener('click', () => { builderController.load(); switchWorkspace('builder'); });
+els.materialExportSummary.addEventListener('click', () => exportProject('summary')); els.materialExportDetails.addEventListener('click', () => exportProject('detail')); els.materialExportJson.addEventListener('click', () => exportProject('json'));
+els.materialCustomList.addEventListener('click', (event) => {
+  const target = (event.target as HTMLElement).closest<HTMLElement>('[data-edit-custom],[data-duplicate-custom],[data-delete-custom],[data-new-custom]'); if (!target) return;
+  if (target.dataset.newCustom !== undefined) { builderController.load(); switchWorkspace('builder'); return; }
+  if (target.dataset.editCustom) editCustomPart(target.dataset.editCustom);
+  if (target.dataset.duplicateCustom) duplicateCustomPart(target.dataset.duplicateCustom);
+  if (target.dataset.deleteCustom) deleteCustomPart(target.dataset.deleteCustom);
+});
 
 els.uploadBtn.addEventListener('click', () => els.pdfInput.click()); els.emptyUploadBtn.addEventListener('click', () => els.pdfInput.click());
 els.pdfInput.addEventListener('change', () => { const file = els.pdfInput.files?.[0]; if (file) void loadPdf(file); els.pdfInput.value = ''; });
@@ -438,7 +517,7 @@ els.overlayCanvas.addEventListener('pointercancel', () => { panState = null; els
 els.overlayCanvas.addEventListener('dblclick', (event) => { if (tool === 'trace') { event.preventDefault(); if (currentTrace.length > 2) currentTrace.pop(); finishTrace(); } });
 els.viewerScroll.addEventListener('wheel', (event) => { if (!event.ctrlKey || !pdfPage) return; event.preventDefault(); zoomFactor = Math.max(0.25, Math.min(6, zoomFactor * (event.deltaY < 0 ? 1.15 : 1 / 1.15))); void renderPage(); }, { passive: false });
 els.detectionList.addEventListener('click', (event) => { const target = event.target as HTMLElement; const accept = target.dataset.accept; const reject = target.dataset.reject; if (accept) acceptDetection(accept); if (reject) rejectDetection(reject); });
-els.detailList.addEventListener('click', (event) => { const target = (event.target as HTMLElement).closest<HTMLElement>('[data-route],[data-part]'); if (!target) return; if (target.dataset.route) selectRoute(project.routes.find((route) => route.id === target.dataset.route) ?? null); if (target.dataset.part) { const part = project.parts.find((item) => item.id === target.dataset.part); if (part) selectPart(part); } });
+els.detailList.addEventListener('click', (event) => { const target = (event.target as HTMLElement).closest<HTMLElement>('[data-route],[data-part],[data-custom]'); if (!target) return; if (target.dataset.route) selectRoute(project.routes.find((route) => route.id === target.dataset.route) ?? null); if (target.dataset.part) { const part = project.parts.find((item) => item.id === target.dataset.part); if (part) selectPart(part); } if (target.dataset.custom) editCustomPart(target.dataset.custom); });
 document.addEventListener('keydown', (event) => {
   const inputActive = event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement || event.target instanceof HTMLTextAreaElement;
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') { event.preventDefault(); persist(); return; }

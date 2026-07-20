@@ -15,15 +15,23 @@ export function exportDate(): string { return new Date().toISOString().slice(0, 
 export function makeDetailedCsv(project: ProjectData): string {
   const rows: Array<Array<string | number>> = [[
     'Category', 'Subtype / model', 'Shape', 'Size', 'System', 'Quantity', 'Measured length (m)',
-    'Added vertical length (m)', 'Source', 'Verification status', 'Notes', 'Page',
+    'Added vertical length (m)', 'Source', 'Verification status', 'Notes', 'Page', 'Part type', 'Name',
+    'End A width (mm)', 'End A height (mm)', 'End B width (mm)', 'End B height (mm)', 'Length (mm)',
+    'Horizontal offset (mm)', 'Vertical offset (mm)', 'Material', 'Thickness (mm)',
   ]];
   project.routes.forEach((route) => rows.push([
     'Duct', 'Route', route.shape, route.size, route.system, 1, routeLengthM(route, project).toFixed(3),
-    '', 'manual', route.status, route.notes, route.page,
+    '', 'manual', route.status, route.notes, route.page, '', '', '', '', '', '', '', '', '', '', '',
   ]));
   project.parts.forEach((part) => rows.push([
     part.category, part.model, '', part.size, part.system, part.quantity, '', part.addedLengthM || '',
-    part.source, part.status, part.notes, part.page,
+    part.source, part.status, part.notes, part.page, '', '', '', '', '', '', '', '', '', '', '',
+  ]));
+  project.customParts.forEach((part) => rows.push([
+    'Custom fitting', 'Rectangular transition', 'rectangular', `${part.endAWidthMm}x${part.endAHeightMm} to ${part.endBWidthMm}x${part.endBHeightMm}`,
+    part.system, part.quantity, '', '', 'custom-builder', part.verificationStatus, part.notes, '', part.partType, part.name,
+    part.endAWidthMm, part.endAHeightMm, part.endBWidthMm, part.endBHeightMm, part.lengthMm,
+    part.horizontalOffsetMm, part.verticalOffsetMm, part.material, part.thicknessMm,
   ]));
   return rows.map((row) => row.map(csv).join(',')).join('\r\n');
 }
@@ -44,5 +52,14 @@ export function makeSummaryCsv(project: ProjectData): string {
     const current = parts.get(key) ?? { ...part, total: 0 }; current.total += part.quantity; parts.set(key, current);
   });
   parts.forEach((part) => rows.push([part.category, [part.model, part.size].filter(Boolean).join(' / '), part.system, part.total, part.status]));
+  rows.push([], ['CUSTOM PARTS'], ['Category', 'Name / geometry', 'System', 'Quantity', 'Status']);
+  const customParts = new Map<string, { label: string; system: string; quantity: number; status: string }>();
+  project.customParts.forEach((part) => {
+    const geometry = `${part.endAWidthMm}x${part.endAHeightMm} → ${part.endBWidthMm}x${part.endBHeightMm}, L${part.lengthMm}, X${part.horizontalOffsetMm}, Y${part.verticalOffsetMm}`;
+    const key = `${part.name}|${geometry}|${part.system}|${part.verificationStatus}`;
+    const current = customParts.get(key) ?? { label: `${part.name} / ${geometry}`, system: part.system, quantity: 0, status: part.verificationStatus };
+    current.quantity += part.quantity; customParts.set(key, current);
+  });
+  customParts.forEach((part) => rows.push(['Custom fitting', part.label, part.system, part.quantity, part.status]));
   return rows.map((row) => row.map(csv).join(',')).join('\r\n');
 }

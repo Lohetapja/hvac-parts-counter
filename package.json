@@ -9,11 +9,13 @@
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "description": "Local-first assisted HVAC PDF takeoff and parts counting MVP",
+  "description": "Local-first assisted HVAC PDF takeoff, material list, and parametric custom fitting builder",
   "dependencies": {
-    "pdfjs-dist": "^6.1.200"
+    "pdfjs-dist": "^6.1.200",
+    "three": "^0.185.1"
   },
   "devDependencies": {
+    "@types/three": "^0.185.1",
     "typescript": "^7.0.2",
     "vite": "^8.1.5"
   },

@@ -17,6 +17,15 @@ A local-first, browser-based assisted HVAC takeoff tool built with Vite, strict 
 - Undo/redo route and part creation/deletion
 - Automatically save project data locally and restore it after refresh
 - Export grouped CSV, detailed CSV, and complete project JSON
+- Build rectangular-to-rectangular transitions from millimetre dimensions
+- Preview custom transitions interactively in Three.js and as front, top, and side SVG drawings
+- Save, reopen, duplicate, group, restore, and export parametric custom parts
+
+## Custom Part Builder
+
+Use the major workspace navigation to open **Custom Part Builder**. The first generator supports centred, offset, same-size, reducing, and enlarging rectangular transitions. End A is centred at `Z = 0`; End B is at the entered length and moves by signed X/Y offsets. The builder stores parameters only—never screenshots or WebGL data.
+
+The generated values, edge lengths, centreline, and surface area are geometric estimates for takeoff and communication. They are not fabrication-ready developments and do not include seams, flanges, allowances, or bend deductions.
 
 PDFs are never stored in localStorage or sent to a server. Construction drawings remain local to the browser.
 

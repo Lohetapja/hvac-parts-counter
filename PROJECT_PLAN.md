@@ -8,6 +8,9 @@
 - Manual fittings/devices with quantities, system, size, vertical length, notes, source, and verification state
 - Conservative nearby-span PDF label suggestions with multiplier and compound-label support
 - Grouped and detailed takeoff summaries, local save/restore safeguards, undo/redo, and CSV/JSON exports
+- Three-workspace navigation: Drawing Takeoff, Custom Part Builder, and Material List
+- Parametric rectangular transition geometry with shared Three.js and SVG projections
+- Custom-part save/edit/duplicate/delete, version-3 storage migration, and export integration
 
 ## Next phase
 

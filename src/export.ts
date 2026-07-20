@@ -1,5 +1,7 @@
 import { routeLengthM } from './measurements';
 import { profileForEnd } from './custom-part-assembly';
+import { countNetworkParts, networksOfKind, networkTotals } from './duct-network';
+import { systemTypeToLabel } from './duct-network-types';
 import type { PartItem, ProjectData } from './types';
 
 function csv(value: string | number): string {
@@ -22,7 +24,13 @@ export function makeDetailedCsv(project: ProjectData): string {
     'End A diameter (mm)', 'End B diameter (mm)', 'Outlet horizontal angle (deg)', 'Outlet vertical angle (deg)', 'Outlet rotation (deg)',
     'Airflow classification', 'Related duct route', 'Related device model', 'Confidence',
     'Tail X', 'Tail Y', 'Tip X', 'Tip Y',
+    'Network name', 'System type', 'Angle (deg)', 'Related labels',
   ]];
+  const networkRow = (leading: Array<string | number>, extras: Array<string | number>): Array<string | number> => {
+    const row = [...leading];
+    while (row.length < 37) row.push('');
+    return [...row, ...extras];
+  };
   project.routes.forEach((route) => rows.push([
     'Duct', 'Route', route.shape, route.size, route.system, 1, routeLengthM(route, project).toFixed(3),
     '', 'manual', route.status, route.notes, route.page, '', '', '', '', '', '', '', '', '', '', '',
@@ -42,6 +50,17 @@ export function makeDetailedCsv(project: ProjectData): string {
     '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', marker.classification, marker.nearestRouteId ?? marker.temporaryAxisId ?? '', marker.deviceModel ?? '', marker.confidence.toFixed(3),
     marker.tail.x.toFixed(3), marker.tail.y.toFixed(3), marker.tip.x.toFixed(3), marker.tip.y.toFixed(3),
   ]));
+  // Duct networks: measured lengths per profile and derived fittings (rejected items excluded).
+  project.ductNetworks.forEach((network) => {
+    const systemLabel = systemTypeToLabel(network.systemType);
+    const labelSummary = project.ductLabels.filter((label) => network.segmentIds.some((id) => id === label.segmentId) || network.nodeIds.some((id) => id === label.nodeId)).map((label) => label.normalized).join(' ');
+    countNetworkParts(project, network).forEach((partRow) => {
+      rows.push(networkRow(
+        [partRow.category, partRow.label, partRow.shape, partRow.size, systemLabel, partRow.quantity, partRow.lengthM !== undefined ? partRow.lengthM.toFixed(3) : '', '', `network-${partRow.source}`, partRow.status, network.notes, network.pageNumber],
+        [network.name, network.systemType, partRow.angleDeg ?? '', labelSummary],
+      ));
+    });
+  });
   const width = rows[0].length; rows.slice(1).forEach((row) => { while (row.length < width) row.push(''); });
   return rows.map((row) => row.map(csv).join(',')).join('\r\n');
 }
@@ -86,5 +105,19 @@ export function makeSummaryCsv(project: ProjectData): string {
     group[marker.classification] += 1; if (marker.verificationStatus === 'verified') group.verified += 1; else group.suggested += 1; airflowGroups.set(key, group);
   });
   airflowGroups.forEach((group) => rows.push([group.system, group.model, group.page, group.supply, group.extract, group.uncertain, group.verified, group.suggested]));
+
+  rows.push([], ['DUCT SYSTEMS (NETWORKS)'], ['Group', 'Network', 'System type', 'Segments', 'Length (m)', 'Verification']);
+  (['tulo', 'poisto'] as const).forEach((kind) => {
+    const label = kind === 'tulo' ? 'TULO SYSTEMS' : 'POISTO SYSTEMS';
+    const networks = networksOfKind(project, kind);
+    if (!networks.length) { rows.push([label, '(none)', '', 0, '0.000', '']); return; }
+    networks.forEach((network) => { const totals = networkTotals(project, network); rows.push([label, network.name, systemTypeToLabel(network.systemType), totals.segments, totals.lengthM.toFixed(3), network.verificationStatus]); });
+  });
+  const otherNetworks = project.ductNetworks.filter((network) => !['supply', 'extract', 'exhaust'].includes(network.systemType));
+  otherNetworks.forEach((network) => { const totals = networkTotals(project, network); rows.push(['OTHER SYSTEMS', network.name, systemTypeToLabel(network.systemType), totals.segments, totals.lengthM.toFixed(3), network.verificationStatus]); });
+
+  rows.push([], ['DUCT NETWORK PARTS'], ['Network', 'Category', 'Part', 'Size', 'Angle', 'Quantity', 'Length (m)', 'Status']);
+  project.ductNetworks.forEach((network) => countNetworkParts(project, network).forEach((part) => rows.push([network.name, part.category, part.label, part.size, part.angleDeg ?? '', part.quantity, part.lengthM !== undefined ? part.lengthM.toFixed(3) : '', part.status])));
+
   return rows.map((row) => row.map(csv).join(',')).join('\r\n');
 }

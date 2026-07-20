@@ -1,6 +1,9 @@
+import type { DuctHighlightState, DuctLabelAssociation, DuctNetwork, DuctNode, DuctPartMapping, DuctSegment, PartDefinition } from './duct-network-types';
+export type * from './duct-network-types';
+
 export type Point = { x: number; y: number };
 export type DuctShape = 'round' | 'rectangular';
-export type Tool = 'pan' | 'calibrate' | 'trace' | 'airflow' | 'axis' | 'label';
+export type Tool = 'pan' | 'calibrate' | 'trace' | 'airflow' | 'axis' | 'label' | 'network-seed' | 'network-trace';
 export type VerificationStatus = 'suggested' | 'verified';
 export type PartSource = 'manual' | 'detected';
 export type CustomPartType = 'rectangular-transition' | 'rectangular-to-round-transition' | 'round-to-rectangular-transition';
@@ -181,7 +184,7 @@ export interface AirflowVisibility {
 }
 
 export interface ProjectData {
-  version: 5;
+  version: 6;
   projectName: string;
   drawing: DrawingIdentity | null;
   page: number;
@@ -195,6 +198,15 @@ export interface ProjectData {
   temporaryDuctAxes: TemporaryDuctAxis[];
   airflowVisibility: AirflowVisibility;
   rejectedDetectionIds: string[];
+  // Connected duct-system takeoff (network highlighting + network-based part counting).
+  ductNetworks: DuctNetwork[];
+  ductSegments: DuctSegment[];
+  ductNodes: DuctNode[];
+  ductLabels: DuctLabelAssociation[];
+  ductPartMappings: DuctPartMapping[];
+  customCatalogue: PartDefinition[];
+  disabledCatalogueIds: string[];
+  ductHighlight: DuctHighlightState;
   createdAt: string;
   updatedAt: string;
 }

@@ -1,4 +1,5 @@
 import { routeLengthM } from './measurements';
+import { profileForEnd } from './custom-part-assembly';
 import type { PartItem, ProjectData } from './types';
 
 function csv(value: string | number): string {
@@ -17,7 +18,8 @@ export function makeDetailedCsv(project: ProjectData): string {
     'Category', 'Subtype / model', 'Shape', 'Size', 'System', 'Quantity', 'Measured length (m)',
     'Added vertical length (m)', 'Source', 'Verification status', 'Notes', 'Page', 'Part type', 'Name',
     'End A width (mm)', 'End A height (mm)', 'End B width (mm)', 'End B height (mm)', 'Length (mm)',
-    'Horizontal offset (mm)', 'Vertical offset (mm)', 'Material', 'Thickness (mm)',
+    'Horizontal offset (mm)', 'Vertical offset (mm)', 'Material', 'Thickness (mm)', 'Part number',
+    'End A diameter (mm)', 'End B diameter (mm)', 'Outlet horizontal angle (deg)', 'Outlet vertical angle (deg)', 'Outlet rotation (deg)',
     'Airflow classification', 'Related duct route', 'Related device model', 'Confidence',
     'Tail X', 'Tail Y', 'Tip X', 'Tip Y',
   ]];
@@ -30,16 +32,17 @@ export function makeDetailedCsv(project: ProjectData): string {
     part.source, part.status, part.notes, part.page, '', '', '', '', '', '', '', '', '', '', '',
   ]));
   project.customParts.forEach((part) => rows.push([
-    'Custom fitting', 'Rectangular transition', 'rectangular', `${part.endAWidthMm}x${part.endAHeightMm} to ${part.endBWidthMm}x${part.endBHeightMm}`,
+    'Custom fitting', part.partType, 'assembly', `${profileForEnd(part, 'a') === 'round' ? `Ø${part.endADiameterMm}` : `${part.endAWidthMm}x${part.endAHeightMm}`} to ${profileForEnd(part, 'b') === 'round' ? `Ø${part.endBDiameterMm}` : `${part.endBWidthMm}x${part.endBHeightMm}`}`,
     part.system, part.quantity, '', '', 'custom-builder', part.verificationStatus, part.notes, '', part.partType, part.name,
     part.endAWidthMm, part.endAHeightMm, part.endBWidthMm, part.endBHeightMm, part.lengthMm,
-    part.horizontalOffsetMm, part.verticalOffsetMm, part.material, part.thicknessMm,
+    part.horizontalOffsetMm, part.verticalOffsetMm, part.material, part.thicknessMm, part.partNumber ?? '', part.endADiameterMm, part.endBDiameterMm, part.outletHorizontalAngleDeg, part.outletVerticalAngleDeg, part.outletRotationDeg,
   ]));
   project.airflowMarkers.filter((marker) => marker.verificationStatus !== 'rejected').forEach((marker) => rows.push([
     'Airflow point', '', '', '', marker.system ?? '', 1, '', '', marker.source, marker.verificationStatus, marker.notes, marker.pageNumber,
-    '', '', '', '', '', '', '', '', '', '', '', marker.classification, marker.nearestRouteId ?? marker.temporaryAxisId ?? '', marker.deviceModel ?? '', marker.confidence.toFixed(3),
+    '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', marker.classification, marker.nearestRouteId ?? marker.temporaryAxisId ?? '', marker.deviceModel ?? '', marker.confidence.toFixed(3),
     marker.tail.x.toFixed(3), marker.tail.y.toFixed(3), marker.tip.x.toFixed(3), marker.tip.y.toFixed(3),
   ]));
+  const width = rows[0].length; rows.slice(1).forEach((row) => { while (row.length < width) row.push(''); });
   return rows.map((row) => row.map(csv).join(',')).join('\r\n');
 }
 
@@ -62,7 +65,8 @@ export function makeSummaryCsv(project: ProjectData): string {
   rows.push([], ['CUSTOM PARTS'], ['Category', 'Name / geometry', 'System', 'Quantity', 'Status']);
   const customParts = new Map<string, { label: string; system: string; quantity: number; status: string }>();
   project.customParts.forEach((part) => {
-    const geometry = `${part.endAWidthMm}x${part.endAHeightMm} → ${part.endBWidthMm}x${part.endBHeightMm}, L${part.lengthMm}, X${part.horizontalOffsetMm}, Y${part.verticalOffsetMm}`;
+    const endA = profileForEnd(part, 'a') === 'round' ? `Ø${part.endADiameterMm}` : `${part.endAWidthMm}x${part.endAHeightMm}`; const endB = profileForEnd(part, 'b') === 'round' ? `Ø${part.endBDiameterMm}` : `${part.endBWidthMm}x${part.endBHeightMm}`;
+    const geometry = `${endA} → ${endB}, L${part.lengthMm}, X${part.horizontalOffsetMm}, Y${part.verticalOffsetMm}, H${part.outletHorizontalAngleDeg}°, V${part.outletVerticalAngleDeg}°`;
     const key = `${part.name}|${geometry}|${part.system}|${part.verificationStatus}`;
     const current = customParts.get(key) ?? { label: `${part.name} / ${geometry}`, system: part.system, quantity: 0, status: part.verificationStatus };
     current.quantity += part.quantity; customParts.set(key, current);

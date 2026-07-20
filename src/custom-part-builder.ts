@@ -1,12 +1,14 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { profileForEnd, syncCustomPartAssembly } from './custom-part-assembly';
+import { downloadCustomPartPdf } from './custom-part-pdf';
 import { buildTransitionGeometry, classifyTransition, swapTransitionEnds, validateCustomPart, type TransitionGeometry } from './transition-geometry';
 import { renderTechnicalView, type GridSize } from './transition-views';
-import type { CustomPart, VerificationStatus } from './types';
+import type { CustomPart, CustomPartType, VerificationStatus } from './types';
 
 const SYSTEMS = ['Supply air', 'Extract air', 'Outdoor air', 'Exhaust air', 'Transfer air', 'Other'];
 const MATERIALS = ['Galvanized steel', 'Stainless steel', 'Aluminium', 'Painted steel', 'Other'];
-const NUMERIC_KEYS = ['endAWidthMm', 'endAHeightMm', 'endBWidthMm', 'endBHeightMm', 'lengthMm', 'horizontalOffsetMm', 'verticalOffsetMm', 'quantity', 'thicknessMm'] as const;
+const NUMERIC_KEYS = ['endAWidthMm', 'endAHeightMm', 'endADiameterMm', 'endBWidthMm', 'endBHeightMm', 'endBDiameterMm', 'lengthMm', 'horizontalOffsetMm', 'verticalOffsetMm', 'outletHorizontalAngleDeg', 'outletVerticalAngleDeg', 'outletRotationDeg', 'quantity', 'thicknessMm'] as const;
 type NumericKey = typeof NUMERIC_KEYS[number];
 
 export interface BuilderController {
@@ -24,22 +26,25 @@ function timestamp(): string { return new Date().toISOString(); }
 function newId(): string { return `custom-${Date.now()}-${Math.random().toString(16).slice(2)}`; }
 function examplePart(): CustomPart {
   const time = timestamp();
-  return { id: newId(), name: 'Offset transition 500x300 to 300x200', partType: 'rectangular-transition', endAWidthMm: 500, endAHeightMm: 300, endBWidthMm: 300, endBHeightMm: 200, lengthMm: 600, horizontalOffsetMm: 100, verticalOffsetMm: 50, quantity: 1, system: 'Supply air', material: 'Galvanized steel', thicknessMm: 0.7, notes: '', createdAt: time, updatedAt: time, verificationStatus: 'suggested' };
+  const part = { id: newId(), name: 'Eccentric rectangular to round transition', partNumber: '', partType: 'rectangular-to-round-transition', endAWidthMm: 500, endAHeightMm: 300, endADiameterMm: 300, endBWidthMm: 300, endBHeightMm: 200, endBDiameterMm: 250, lengthMm: 600, horizontalOffsetMm: 100, verticalOffsetMm: 50, outletHorizontalAngleDeg: 12, outletVerticalAngleDeg: -6, outletRotationDeg: 0, quantity: 1, system: 'Supply air', material: 'Galvanized steel', thicknessMm: 0.7, notes: '', createdAt: time, updatedAt: time, verificationStatus: 'suggested' as VerificationStatus } as CustomPart;
+  return syncCustomPartAssembly(part);
 }
 function blankPart(): CustomPart {
   const part = examplePart();
-  return { ...part, id: newId(), name: 'Rectangular centred reducer', horizontalOffsetMm: 0, verticalOffsetMm: 0, createdAt: timestamp(), updatedAt: timestamp() };
+  return syncCustomPartAssembly({ ...part, id: newId(), name: 'Rectangular centred reducer', partType: 'rectangular-transition', horizontalOffsetMm: 0, verticalOffsetMm: 0, outletHorizontalAngleDeg: 0, outletVerticalAngleDeg: 0, createdAt: timestamp(), updatedAt: timestamp() });
 }
 function htmlEscape(value: string): string { return value.replace(/[&<>'"]/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' })[character] ?? character); }
 
 export function initCustomPartBuilder(root: HTMLElement, options: BuilderOptions): BuilderController {
   root.innerHTML = `<div class="builder-shell">
     <aside class="builder-controls">
-      <div class="builder-heading"><div><span class="eyebrow">Parametric fitting</span><h2>Rectangular transition</h2></div><button id="builderLoadExample" class="btn">Load Example</button></div>
+      <div class="builder-heading"><div><span class="eyebrow">Parametric assembly</span><h2 id="builderTitle">Transition</h2></div><button id="builderLoadExample" class="btn">Load R→Ø Example</button></div>
+      <label class="field"><span class="label">Part type</span><select id="builderPartType" class="select"><option value="rectangular-transition">Rectangular → rectangular</option><option value="rectangular-to-round-transition">Rectangular → round</option><option value="round-to-rectangular-transition">Round → rectangular</option></select></label>
       <label class="field"><span class="label">Part name</span><input id="builderName" class="input" maxlength="120"><span class="error" data-error="name"></span></label>
+      <label class="field"><span class="label">Part number (optional)</span><input id="builderPartNumber" class="input" maxlength="80"></label>
       <div class="suggestion-box"><span>Suggested classification</span><strong id="builderClassification"></strong></div>
-      <fieldset><legend>End A · Z = 0</legend><div class="inline"><label class="field"><span class="label">Width (mm)</span><input id="builderEndAWidth" class="input" type="number" min="1" max="20000"><span class="error" data-error="endAWidthMm"></span></label><label class="field"><span class="label">Height (mm)</span><input id="builderEndAHeight" class="input" type="number" min="1" max="20000"><span class="error" data-error="endAHeightMm"></span></label></div></fieldset>
-      <fieldset><legend>End B · Z = length</legend><div class="inline"><label class="field"><span class="label">Width (mm)</span><input id="builderEndBWidth" class="input" type="number" min="1" max="20000"><span class="error" data-error="endBWidthMm"></span></label><label class="field"><span class="label">Height (mm)</span><input id="builderEndBHeight" class="input" type="number" min="1" max="20000"><span class="error" data-error="endBHeightMm"></span></label></div></fieldset>
+      <fieldset><legend>Port P1 · End A · Z = 0</legend><div id="builderEndARect" class="inline"><label class="field"><span class="label">Width (mm)</span><input id="builderEndAWidth" class="input" type="number" min="1" max="20000"><span class="error" data-error="endAWidthMm"></span></label><label class="field"><span class="label">Height (mm)</span><input id="builderEndAHeight" class="input" type="number" min="1" max="20000"><span class="error" data-error="endAHeightMm"></span></label></div><label id="builderEndARound" class="field hidden"><span class="label">Diameter (mm)</span><input id="builderEndADiameter" class="input" type="number" min="1" max="20000"><span class="error" data-error="endADiameterMm"></span></label></fieldset>
+      <fieldset><legend>Port P2 · End B · Z = length</legend><div id="builderEndBRect" class="inline"><label class="field"><span class="label">Width (mm)</span><input id="builderEndBWidth" class="input" type="number" min="1" max="20000"><span class="error" data-error="endBWidthMm"></span></label><label class="field"><span class="label">Height (mm)</span><input id="builderEndBHeight" class="input" type="number" min="1" max="20000"><span class="error" data-error="endBHeightMm"></span></label></div><label id="builderEndBRound" class="field hidden"><span class="label">Diameter (mm)</span><input id="builderEndBDiameter" class="input" type="number" min="1" max="20000"><span class="error" data-error="endBDiameterMm"></span></label></fieldset>
       <label class="field"><span class="label">Body length (mm)</span><input id="builderLength" class="input" type="number" min="1" max="20000"><span class="error" data-error="lengthMm"></span></label>
       <fieldset><legend>End B offsets</legend>
         <label class="field"><span class="label">Horizontal offset X (mm)</span><input id="builderHorizontalOffset" class="input" type="number" min="-20000" max="20000"><span class="error" data-error="horizontalOffsetMm"></span></label>
@@ -48,15 +53,16 @@ export function initCustomPartBuilder(root: HTMLElement, options: BuilderOptions
         <div class="adjust-row"><button class="btn small" data-adjust="verticalOffsetMm" data-delta="-10">−10 mm</button><button class="btn small" data-adjust="verticalOffsetMm" data-delta="10">+10 mm</button><button id="builderCentreVertical" class="btn small">Centre vertically</button></div>
         <p class="help">+X moves End B right; −X left. +Y moves End B up; −Y down.</p>
       </fieldset>
+      <fieldset><legend>Outlet P2 orientation</legend><div class="inline"><label class="field"><span class="label">Horizontal angle (°)</span><input id="builderHorizontalAngle" class="input" type="number" min="-85" max="85"><span class="error" data-error="outletHorizontalAngleDeg"></span></label><label class="field"><span class="label">Vertical angle (°)</span><input id="builderVerticalAngle" class="input" type="number" min="-85" max="85"><span class="error" data-error="outletVerticalAngleDeg"></span></label></div><label class="field"><span class="label">Rotation around outlet axis (°)</span><input id="builderOutletRotation" class="input" type="number" min="-180" max="180"><span class="error" data-error="outletRotationDeg"></span></label><p class="help">Angles define a full direction vector. Positive horizontal turns P2 right; positive vertical tilts P2 up.</p></fieldset>
       <div class="inline"><label class="field"><span class="label">Quantity</span><input id="builderQuantity" class="input" type="number" min="1" max="10000"><span class="error" data-error="quantity"></span></label><label class="field"><span class="label">System</span><select id="builderSystem" class="select">${SYSTEMS.map((value) => `<option>${value}</option>`).join('')}</select></label></div>
       <div class="inline"><label class="field"><span class="label">Material</span><select id="builderMaterial" class="select">${MATERIALS.map((value) => `<option>${value}</option>`).join('')}</select></label><label class="field"><span class="label">Thickness (mm)</span><input id="builderThickness" class="input" type="number" min="0.1" max="20" step="0.1"><span class="error" data-error="thicknessMm"></span></label></div>
       <label class="field"><span class="label">Verification</span><select id="builderVerification" class="select"><option value="suggested">Suggested</option><option value="verified">Verified</option></select></label>
       <label class="field"><span class="label">Notes</span><textarea id="builderNotes" class="input" rows="2" maxlength="500"></textarea></label>
-      <div class="button-row"><button id="builderSwapEnds" class="btn">Swap End A / B</button><button id="builderNew" class="btn ghost">New part</button></div>
+      <div class="button-row"><button id="builderSwapEnds" class="btn">Swap End A / B</button><button id="builderNew" class="btn ghost">New part</button><button id="builderPdf" class="btn">Export drawing PDF</button></div>
       <button id="builderSave" class="btn primary builder-save">Save Custom Part</button>
     </aside>
     <section class="builder-visuals">
-      <div class="builder-preview-panel"><div class="panel-header"><div><h2>3D preview</h2><span id="builderEditingStatus" class="badge">New part</span></div><div class="preview-actions"><button class="btn small" data-camera="front">Front</button><button class="btn small" data-camera="top">Top</button><button class="btn small" data-camera="side">Side</button><button class="btn small" data-camera="iso">Isometric</button><button id="builderFitCamera" class="btn small">Fit</button><button id="builderResetCamera" class="btn small">Reset</button></div></div><div id="builder3d" class="builder-3d" aria-label="Interactive 3D rectangular transition preview"></div><label class="toggle-row"><input id="builderCentreline" type="checkbox" checked> Show 3D centreline</label></div>
+      <div class="builder-preview-panel"><div class="panel-header"><div><h2>Assembly 3D preview</h2><span id="builderEditingStatus" class="badge">New part</span></div><div class="preview-actions"><button class="btn small" data-camera="front">Front</button><button class="btn small" data-camera="top">Top</button><button class="btn small" data-camera="side">Side</button><button class="btn small" data-camera="iso">Isometric</button><button id="builderFitCamera" class="btn small">Fit</button><button id="builderResetCamera" class="btn small">Reset</button></div></div><div id="builder3d" class="builder-3d" aria-label="Interactive 3D custom HVAC fitting preview"></div><label class="toggle-row"><input id="builderCentreline" type="checkbox" checked> Show 3D centreline</label></div>
       <div id="builderMetrics" class="builder-metrics"></div>
       <div class="technical-toolbar"><label><input id="builderShowDimensions" type="checkbox" checked> Show dimensions</label><label>Grid <select id="builderGrid" class="select compact"><option value="0">Off</option><option value="10">10 mm</option><option value="50" selected>50 mm</option><option value="100">100 mm</option></select></label></div>
       <div id="builderTechnicalViews" class="technical-grid"></div>
@@ -65,9 +71,9 @@ export function initCustomPartBuilder(root: HTMLElement, options: BuilderOptions
 
   const get = <T extends HTMLElement>(id: string): T => { const value = root.querySelector<T>(`#${id}`); if (!value) throw new Error(`Missing builder element ${id}`); return value; };
   const inputs: Record<NumericKey, HTMLInputElement> = {
-    endAWidthMm: get('builderEndAWidth'), endAHeightMm: get('builderEndAHeight'), endBWidthMm: get('builderEndBWidth'), endBHeightMm: get('builderEndBHeight'), lengthMm: get('builderLength'), horizontalOffsetMm: get('builderHorizontalOffset'), verticalOffsetMm: get('builderVerticalOffset'), quantity: get('builderQuantity'), thicknessMm: get('builderThickness'),
+    endAWidthMm: get('builderEndAWidth'), endAHeightMm: get('builderEndAHeight'), endADiameterMm: get('builderEndADiameter'), endBWidthMm: get('builderEndBWidth'), endBHeightMm: get('builderEndBHeight'), endBDiameterMm: get('builderEndBDiameter'), lengthMm: get('builderLength'), horizontalOffsetMm: get('builderHorizontalOffset'), verticalOffsetMm: get('builderVerticalOffset'), outletHorizontalAngleDeg: get('builderHorizontalAngle'), outletVerticalAngleDeg: get('builderVerticalAngle'), outletRotationDeg: get('builderOutletRotation'), quantity: get('builderQuantity'), thicknessMm: get('builderThickness'),
   };
-  const nameInput = get<HTMLInputElement>('builderName'); const systemInput = get<HTMLSelectElement>('builderSystem'); const materialInput = get<HTMLSelectElement>('builderMaterial'); const notesInput = get<HTMLTextAreaElement>('builderNotes'); const verificationInput = get<HTMLSelectElement>('builderVerification');
+  const partTypeInput = get<HTMLSelectElement>('builderPartType'); const nameInput = get<HTMLInputElement>('builderName'); const partNumberInput = get<HTMLInputElement>('builderPartNumber'); const systemInput = get<HTMLSelectElement>('builderSystem'); const materialInput = get<HTMLSelectElement>('builderMaterial'); const notesInput = get<HTMLTextAreaElement>('builderNotes'); const verificationInput = get<HTMLSelectElement>('builderVerification');
   const preview = get<HTMLDivElement>('builder3d'); const technical = get<HTMLDivElement>('builderTechnicalViews'); const metrics = get<HTMLDivElement>('builderMetrics');
   let draft = blankPart(); let active = false; let editingExisting = false; let currentObject: THREE.Group | null = null; let renderTimer = 0;
 
@@ -90,11 +96,12 @@ export function initCustomPartBuilder(root: HTMLElement, options: BuilderOptions
   function create3d(geometry: TransitionGeometry): void {
     disposeObject(); const group = new THREE.Group();
     const positions = geometry.vertices.flatMap((v) => [v.x, v.y, v.z]);
-    const indices: number[] = [0, 3, 2, 0, 2, 1, 4, 5, 6, 4, 6, 7];
+    const indices: number[] = [];
     geometry.sideFaces.forEach(([a, b, c, d]) => indices.push(a, b, c, a, c, d));
     const bodyGeometry = new THREE.BufferGeometry(); bodyGeometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3)); bodyGeometry.setIndex(indices); bodyGeometry.computeVertexNormals();
     const body = new THREE.Mesh(bodyGeometry, new THREE.MeshStandardMaterial({ color: 0x5b9fc4, metalness: .45, roughness: .48, side: THREE.DoubleSide, transparent: true, opacity: .88 })); group.add(body);
     const edgesGeometry = new THREE.EdgesGeometry(bodyGeometry, 15); group.add(new THREE.LineSegments(edgesGeometry, new THREE.LineBasicMaterial({ color: 0xd8efff })));
+    geometry.ports.forEach((port) => { const length = Math.max(40, draft.lengthMm * .18); const axis = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(port.position.x, port.position.y, port.position.z), new THREE.Vector3(port.position.x + port.direction.x * length, port.position.y + port.direction.y * length, port.position.z + port.direction.z * length)]); group.add(new THREE.Line(axis, new THREE.LineBasicMaterial({ color: port.role === 'inlet' ? 0x65c7ff : 0xffb15c }))); });
     if (get<HTMLInputElement>('builderCentreline').checked) { const centre = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0, 0), new THREE.Vector3(draft.horizontalOffsetMm, draft.verticalOffsetMm, draft.lengthMm)]); group.add(new THREE.Line(centre, new THREE.LineDashedMaterial({ color: 0xffd479, dashSize: Math.max(10, draft.lengthMm / 25), gapSize: Math.max(6, draft.lengthMm / 40) }))); (group.children[group.children.length - 1] as THREE.Line).computeLineDistances(); }
     currentObject = group; scene.add(group); renderer?.render(scene, camera);
   }
@@ -110,20 +117,22 @@ export function initCustomPartBuilder(root: HTMLElement, options: BuilderOptions
 
   function readDraft(): void {
     NUMERIC_KEYS.forEach((key) => { draft[key] = Number(inputs[key].value) as never; });
-    draft.name = nameInput.value; draft.system = systemInput.value; draft.material = materialInput.value; draft.notes = notesInput.value; draft.verificationStatus = verificationInput.value as VerificationStatus; draft.updatedAt = timestamp();
+    draft.partType = partTypeInput.value as CustomPartType; draft.name = nameInput.value; draft.partNumber = partNumberInput.value.trim(); draft.system = systemInput.value; draft.material = materialInput.value; draft.notes = notesInput.value; draft.verificationStatus = verificationInput.value as VerificationStatus; draft.updatedAt = timestamp();
   }
   function writeDraft(): void {
-    NUMERIC_KEYS.forEach((key) => { inputs[key].value = String(draft[key]); }); nameInput.value = draft.name; systemInput.value = draft.system; materialInput.value = draft.material; notesInput.value = draft.notes; verificationInput.value = draft.verificationStatus;
+    NUMERIC_KEYS.forEach((key) => { inputs[key].value = String(draft[key]); }); partTypeInput.value = draft.partType; nameInput.value = draft.name; partNumberInput.value = draft.partNumber ?? ''; systemInput.value = draft.system; materialInput.value = draft.material; notesInput.value = draft.notes; verificationInput.value = draft.verificationStatus;
     get('builderEditingStatus').textContent = editingExisting ? 'Editing' : 'New part';
   }
   function render(): void {
     readDraft(); const errors = validateCustomPart(draft); root.querySelectorAll<HTMLElement>('[data-error]').forEach((element) => { const key = element.dataset.error as keyof CustomPart; element.textContent = errors[key] ?? ''; });
-    get('builderClassification').textContent = classifyTransition(draft);
-    if (Object.keys(errors).length) { get<HTMLButtonElement>('builderSave').disabled = true; return; }
-    get<HTMLButtonElement>('builderSave').disabled = false; const geometry = buildTransitionGeometry(draft); create3d(geometry);
+    const profileA = profileForEnd(draft, 'a'); const profileB = profileForEnd(draft, 'b'); get('builderEndARect').classList.toggle('hidden', profileA !== 'rectangular'); get('builderEndARound').classList.toggle('hidden', profileA !== 'round'); get('builderEndBRect').classList.toggle('hidden', profileB !== 'rectangular'); get('builderEndBRound').classList.toggle('hidden', profileB !== 'round');
+    get('builderTitle').textContent = partTypeInput.selectedOptions[0]?.textContent ?? 'Transition'; get('builderClassification').textContent = classifyTransition(draft);
+    if (Object.keys(errors).length) { get<HTMLButtonElement>('builderSave').disabled = true; get<HTMLButtonElement>('builderPdf').disabled = true; return; }
+    get<HTMLButtonElement>('builderSave').disabled = false; get<HTMLButtonElement>('builderPdf').disabled = false; draft = syncCustomPartAssembly(draft); const geometry = buildTransitionGeometry(draft); create3d(geometry);
     const showDimensions = get<HTMLInputElement>('builderShowDimensions').checked; const grid = Number(get<HTMLSelectElement>('builderGrid').value) as GridSize;
     technical.innerHTML = renderTechnicalView(draft, geometry, 'front', showDimensions, grid) + renderTechnicalView(draft, geometry, 'top', showDimensions, grid) + renderTechnicalView(draft, geometry, 'side', showDimensions, grid);
-    metrics.innerHTML = `<div><span>End A</span><b>${draft.endAWidthMm} × ${draft.endAHeightMm} mm</b></div><div><span>End B</span><b>${draft.endBWidthMm} × ${draft.endBHeightMm} mm</b></div><div><span>Body / centreline</span><b>${draft.lengthMm} / ${geometry.centrelineLengthMm.toFixed(1)} mm</b></div><div><span>Offsets X / Y</span><b>${draft.horizontalOffsetMm > 0 ? '+' : ''}${draft.horizontalOffsetMm} / ${draft.verticalOffsetMm > 0 ? '+' : ''}${draft.verticalOffsetMm} mm</b></div><div><span>Corner edges</span><b>${geometry.cornerEdgeLengthsMm.map((value) => value.toFixed(1)).join(' · ')} mm</b></div><div><span>Surface area</span><b>${geometry.surfaceAreaM2.toFixed(3)} m²</b></div><p>Geometric estimates only; not fabrication-ready values.</p>`;
+    const sizeA = profileA === 'round' ? `Ø${draft.endADiameterMm}` : `${draft.endAWidthMm} × ${draft.endAHeightMm}`; const sizeB = profileB === 'round' ? `Ø${draft.endBDiameterMm}` : `${draft.endBWidthMm} × ${draft.endBHeightMm}`; const direction = geometry.ports[1].direction;
+    metrics.innerHTML = `<div><span>Port P1</span><b>${sizeA} mm</b></div><div><span>Port P2</span><b>${sizeB} mm</b></div><div><span>Body / centreline</span><b>${draft.lengthMm} / ${geometry.centrelineLengthMm.toFixed(1)} mm</b></div><div><span>Offsets X / Y</span><b>${draft.horizontalOffsetMm > 0 ? '+' : ''}${draft.horizontalOffsetMm} / ${draft.verticalOffsetMm > 0 ? '+' : ''}${draft.verticalOffsetMm} mm</b></div><div><span>P2 direction</span><b>${direction.x.toFixed(3)}, ${direction.y.toFixed(3)}, ${direction.z.toFixed(3)}</b></div><div><span>Surface area</span><b>${geometry.surfaceAreaM2.toFixed(3)} m²</b></div><p>Geometric estimates only; verify all ports, angles and dimensions before fabrication.</p>`;
     renderer?.render(scene, camera);
   }
   function scheduleRender(): void { window.clearTimeout(renderTimer); renderTimer = window.setTimeout(render, 70); }
@@ -134,13 +143,14 @@ export function initCustomPartBuilder(root: HTMLElement, options: BuilderOptions
     const cameraView = target.dataset.camera; if (cameraView) setCamera(cameraView);
   });
   get('builderCentreHorizontal').addEventListener('click', () => { inputs.horizontalOffsetMm.value = '0'; render(); }); get('builderCentreVertical').addEventListener('click', () => { inputs.verticalOffsetMm.value = '0'; render(); });
-  get('builderSwapEnds').addEventListener('click', () => { readDraft(); draft = swapTransitionEnds(draft); writeDraft(); render(); options.notify('Ends swapped; offsets inverted to preserve physical geometry'); });
+  get('builderSwapEnds').addEventListener('click', () => { readDraft(); draft = syncCustomPartAssembly(swapTransitionEnds(draft)); writeDraft(); render(); options.notify('Ends and port profiles swapped; offsets and outlet orientation reversed'); });
   get('builderLoadExample').addEventListener('click', () => { draft = examplePart(); editingExisting = false; writeDraft(); render(); fitCamera(); options.notify('Example transition loaded'); });
   get('builderNew').addEventListener('click', () => { draft = blankPart(); editingExisting = false; writeDraft(); render(); fitCamera(); });
   get('builderFitCamera').addEventListener('click', () => fitCamera(camera.position.clone().sub(controls?.target ?? new THREE.Vector3())));
   get('builderResetCamera').addEventListener('click', () => fitCamera());
   get('builderCentreline').addEventListener('change', render);
-  get('builderSave').addEventListener('click', () => { readDraft(); const errors = validateCustomPart(draft); if (Object.keys(errors).length) { render(); options.notify('Correct the highlighted measurements before saving'); return; } options.onSave(structuredClone(draft)); });
+  get('builderPdf').addEventListener('click', () => { readDraft(); const errors = validateCustomPart(draft); if (Object.keys(errors).length) { render(); options.notify('Correct the highlighted measurements before exporting'); return; } draft = syncCustomPartAssembly(draft); downloadCustomPartPdf(draft); options.notify('Two-page custom fitting PDF created'); });
+  get('builderSave').addEventListener('click', () => { readDraft(); const errors = validateCustomPart(draft); if (Object.keys(errors).length) { render(); options.notify('Correct the highlighted measurements before saving'); return; } draft = syncCustomPartAssembly(draft); options.onSave(structuredClone(draft)); });
 
   writeDraft(); render(); fitCamera();
   return {

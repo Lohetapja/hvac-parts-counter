@@ -6,6 +6,8 @@ import { exportDate, makeDetailedCsv, makeSummaryCsv, safeFileBase } from './exp
 import { distanceToSegment, PDF_POINT_MM, polylinePdfDistance, presetMmPerPdfPoint, routeLengthM, snapPoint } from './measurements';
 import { clearSavedProject, loadProject, saveProject } from './storage';
 import { initCustomPartBuilder } from './custom-part-builder';
+import { profileForEnd, syncCustomPartAssembly } from './custom-part-assembly';
+import { downloadCustomPartPdf } from './custom-part-pdf';
 import type { AirflowClassification, AirflowMarker, CustomPart, DetectionLocation, DetectionSuggestion, PartItem, Point, ProjectData, RouteItem, Tool } from './types';
 import './styles.css';
 
@@ -21,7 +23,7 @@ function uid(prefix: string): string { return `${prefix}-${Date.now()}-${Math.ra
 function freshProject(): ProjectData {
   const timestamp = now();
   return {
-    version: 4, projectName: 'Tomorrow HVAC Takeoff', drawing: null, page: 1, scaleRatio: 50, customScaleRatio: 50,
+    version: 5, projectName: 'Tomorrow HVAC Takeoff', drawing: null, page: 1, scaleRatio: 50, customScaleRatio: 50,
     calibration: { mode: 'preset', mmPerPdfPoint: presetMmPerPdfPoint(50) }, routes: [], parts: [], customParts: [],
     airflowMarkers: [], temporaryDuctAxes: [], airflowVisibility: { showSupply: true, showExtract: true, showUncertain: true, verifiedOnly: false, showLabels: true, showVectors: true },
     rejectedDetectionIds: [], createdAt: timestamp, updatedAt: timestamp,
@@ -200,6 +202,7 @@ function switchWorkspace(workspace: 'takeoff' | 'builder' | 'materials'): void {
 }
 
 function saveCustomPart(part: CustomPart): void {
+  part = syncCustomPartAssembly(part);
   const existingIndex = project.customParts.findIndex((item) => item.id === part.id);
   if (existingIndex >= 0) {
     part.createdAt = project.customParts[existingIndex].createdAt;
@@ -218,7 +221,7 @@ function editCustomPart(id: string): void {
 function duplicateCustomPart(id: string): void {
   const source = project.customParts.find((item) => item.id === id); if (!source) return;
   const time = now(); const duplicate = structuredClone(source); duplicate.id = uid('custom'); duplicate.name = `${source.name} copy`; duplicate.createdAt = time; duplicate.updatedAt = time;
-  builderController.load(duplicate, false); switchWorkspace('builder'); toast('Duplicate loaded; save it to create a new record');
+  builderController.load(syncCustomPartAssembly(duplicate), false); switchWorkspace('builder'); toast('Duplicate loaded; save it to create a new record');
 }
 
 function deleteCustomPart(id: string): void {
@@ -238,7 +241,7 @@ function renderMaterialWorkspace(): void {
   const parts = project.parts.map((part) => `<div class="material-card"><div><b>${escapeHtml(part.category)}${part.model ? ` · ${escapeHtml(part.model)}` : ''}</b><span>${escapeHtml(part.size || 'No size')} · ${escapeHtml(part.system)} · ${part.source}/${part.status}</span></div><strong>${part.quantity}×</strong></div>`);
   const airflow = project.airflowMarkers.filter((marker) => marker.verificationStatus !== 'rejected').map((marker) => `<div class="material-card"><div><b>${escapeHtml(airflowLabel(marker.classification))}</b><span>${escapeHtml(marker.system ?? 'Unassigned')} · ${marker.verificationStatus} · Page ${marker.pageNumber}${marker.deviceModel ? ` · ${escapeHtml(marker.deviceModel)}` : ''}</span></div><strong>1×</strong></div>`);
   els.materialStandardList.innerHTML = routes.length || parts.length || airflow.length ? [...routes, ...parts, ...airflow].join('') : '<div class="empty-mini">No measured ducts, standard parts, or airflow points yet.</div>';
-  els.materialCustomList.innerHTML = project.customParts.length ? project.customParts.map((part) => `<article class="custom-material-card"><div class="custom-material-main"><span class="badge ${part.verificationStatus === 'suggested' ? 'warning' : ''}">${escapeHtml(part.verificationStatus)}</span><h3>${escapeHtml(part.name)}</h3><p>${part.endAWidthMm}×${part.endAHeightMm} → ${part.endBWidthMm}×${part.endBHeightMm} mm · L${part.lengthMm} · X${part.horizontalOffsetMm > 0 ? '+' : ''}${part.horizontalOffsetMm} · Y${part.verticalOffsetMm > 0 ? '+' : ''}${part.verticalOffsetMm}</p><small>${escapeHtml(part.system)} · ${escapeHtml(part.material)} · ${part.thicknessMm} mm · source: custom-builder</small></div><strong class="material-qty">${part.quantity}×</strong><div class="custom-material-actions"><button class="btn small" data-edit-custom="${part.id}">Open / edit</button><button class="btn small" data-duplicate-custom="${part.id}">Duplicate</button><button class="btn small ghost danger" data-delete-custom="${part.id}">Delete</button></div></article>`).join('') : '<div class="empty-state material-empty"><h2>No custom parts yet</h2><p>Build a rectangular transition once and keep its parameters with this project.</p><button class="btn primary" data-new-custom>Open Custom Part Builder</button></div>';
+  els.materialCustomList.innerHTML = project.customParts.length ? project.customParts.map((part) => { const a = profileForEnd(part, 'a') === 'round' ? `Ø${part.endADiameterMm}` : `${part.endAWidthMm}×${part.endAHeightMm}`; const b = profileForEnd(part, 'b') === 'round' ? `Ø${part.endBDiameterMm}` : `${part.endBWidthMm}×${part.endBHeightMm}`; return `<article class="custom-material-card"><div class="custom-material-main"><span class="badge ${part.verificationStatus === 'suggested' ? 'warning' : ''}">${escapeHtml(part.verificationStatus)}</span><h3>${escapeHtml(part.name)}</h3><p>P1 ${a} → P2 ${b} mm · L${part.lengthMm} · X${part.horizontalOffsetMm > 0 ? '+' : ''}${part.horizontalOffsetMm} · Y${part.verticalOffsetMm > 0 ? '+' : ''}${part.verticalOffsetMm} · H${part.outletHorizontalAngleDeg}° / V${part.outletVerticalAngleDeg}°</p><small>${escapeHtml(part.partType)} · ${escapeHtml(part.system)} · ${escapeHtml(part.material)} · ${part.thicknessMm} mm · source: custom-builder</small></div><strong class="material-qty">${part.quantity}×</strong><div class="custom-material-actions"><button class="btn small" data-edit-custom="${part.id}">Open / edit</button><button class="btn small" data-pdf-custom="${part.id}">Drawing PDF</button><button class="btn small" data-duplicate-custom="${part.id}">Duplicate</button><button class="btn small ghost danger" data-delete-custom="${part.id}">Delete</button></div></article>`; }).join('') : '<div class="empty-state material-empty"><h2>No custom parts yet</h2><p>Build a rectangular, rectangular-to-round, or round-to-rectangular transition and keep its assembly parameters with this project.</p><button class="btn primary" data-new-custom>Open Custom Part Builder</button></div>';
 }
 function markChanged(): void {
   project.updatedAt = now();
@@ -697,7 +700,7 @@ function renderUi(): void {
   els.partSummary.innerHTML = groups.size ? [...groups.values()].map((item) => `<div class="summary-row"><b>${escapeHtml(item.label)}</b><span>${escapeHtml(item.system)} · ${escapeHtml(item.status)}</span><strong>${item.quantity}×</strong></div>`).join('') : '<div class="empty-mini">No parts or devices yet.</div>';
   const routeCards = project.routes.map((route) => `<button class="item-card selectable ${route.id === selectedRouteId ? 'selected' : ''}" data-route="${route.id}"><span><b>${escapeHtml(route.size)} · ${routeLengthM(route, project).toFixed(2)} m</b><small>${escapeHtml(route.shape)} · ${escapeHtml(route.system)} · Page ${route.page}${route.notes ? ` · ${escapeHtml(route.notes)}` : ''}</small></span></button>`);
   const partCards = project.parts.map((part) => `<button class="item-card selectable ${part.id === selectedPartId ? 'selected' : ''}" data-part="${part.id}"><span><b>${part.quantity}× ${escapeHtml(part.category)}${part.model ? ` · ${escapeHtml(part.model)}` : ''}</b><small>${escapeHtml(part.size || 'No size')} · ${escapeHtml(part.system)} · ${part.source}/${part.status} · Page ${part.page}</small></span></button>`);
-  const customCards = project.customParts.map((part) => `<button class="item-card selectable" data-custom="${part.id}"><span><b>${part.quantity}× Custom · ${escapeHtml(part.name)}</b><small>${part.endAWidthMm}×${part.endAHeightMm} → ${part.endBWidthMm}×${part.endBHeightMm} · L${part.lengthMm} · X${part.horizontalOffsetMm} · Y${part.verticalOffsetMm}</small></span></button>`);
+  const customCards = project.customParts.map((part) => { const a = profileForEnd(part, 'a') === 'round' ? `Ø${part.endADiameterMm}` : `${part.endAWidthMm}×${part.endAHeightMm}`; const b = profileForEnd(part, 'b') === 'round' ? `Ø${part.endBDiameterMm}` : `${part.endBWidthMm}×${part.endBHeightMm}`; return `<button class="item-card selectable" data-custom="${part.id}"><span><b>${part.quantity}× Custom · ${escapeHtml(part.name)}</b><small>${a} → ${b} · L${part.lengthMm} · X${part.horizontalOffsetMm} · Y${part.verticalOffsetMm}</small></span></button>`; });
   els.detailList.innerHTML = routeCards.length || partCards.length || customCards.length ? [...routeCards, ...partCards, ...customCards].join('') : '<div class="empty-mini">Trace a route or add a part to build the takeoff.</div>';
   els.showSupply.checked = project.airflowVisibility.showSupply; els.showExtract.checked = project.airflowVisibility.showExtract; els.showUncertain.checked = project.airflowVisibility.showUncertain; els.verifiedOnly.checked = project.airflowVisibility.verifiedOnly; els.showAirflowLabels.checked = project.airflowVisibility.showLabels; els.showAirflowVectors.checked = project.airflowVisibility.showVectors;
   renderAirflowReview();
@@ -736,9 +739,10 @@ document.querySelectorAll<HTMLButtonElement>('[data-workspace]').forEach((button
 els.materialNewCustom.addEventListener('click', () => { builderController.load(); switchWorkspace('builder'); });
 els.materialExportSummary.addEventListener('click', () => exportProject('summary')); els.materialExportDetails.addEventListener('click', () => exportProject('detail')); els.materialExportJson.addEventListener('click', () => exportProject('json'));
 els.materialCustomList.addEventListener('click', (event) => {
-  const target = (event.target as HTMLElement).closest<HTMLElement>('[data-edit-custom],[data-duplicate-custom],[data-delete-custom],[data-new-custom]'); if (!target) return;
+  const target = (event.target as HTMLElement).closest<HTMLElement>('[data-edit-custom],[data-pdf-custom],[data-duplicate-custom],[data-delete-custom],[data-new-custom]'); if (!target) return;
   if (target.dataset.newCustom !== undefined) { builderController.load(); switchWorkspace('builder'); return; }
   if (target.dataset.editCustom) editCustomPart(target.dataset.editCustom);
+  if (target.dataset.pdfCustom) { const part = project.customParts.find((item) => item.id === target.dataset.pdfCustom); if (part) { downloadCustomPartPdf(part); toast('Two-page custom fitting PDF created'); } }
   if (target.dataset.duplicateCustom) duplicateCustomPart(target.dataset.duplicateCustom);
   if (target.dataset.deleteCustom) deleteCustomPart(target.dataset.deleteCustom);
 });

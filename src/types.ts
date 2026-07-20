@@ -3,7 +3,69 @@ export type DuctShape = 'round' | 'rectangular';
 export type Tool = 'pan' | 'calibrate' | 'trace' | 'airflow' | 'axis' | 'label';
 export type VerificationStatus = 'suggested' | 'verified';
 export type PartSource = 'manual' | 'detected';
-export type CustomPartType = 'rectangular-transition';
+export type CustomPartType = 'rectangular-transition' | 'rectangular-to-round-transition' | 'round-to-rectangular-transition';
+export type SegmentType = 'rectangular-straight' | 'round-straight' | 'rectangular-transition' | 'rectangular-to-round-transition' | 'round-to-rectangular-transition' | 'rectangular-offset' | 'rectangular-elbow' | 'plenum-box';
+export type PortProfile = 'rectangular' | 'round';
+export type PortRole = 'inlet' | 'outlet' | 'branch' | 'equipment';
+export interface Vector3 { x: number; y: number; z: number }
+export interface Transform3 { position: Vector3; rotationDeg: Vector3 }
+export interface ConnectionPort {
+  id: string;
+  profile: PortProfile;
+  widthMm?: number;
+  heightMm?: number;
+  diameterMm?: number;
+  position: Vector3;
+  direction: Vector3;
+  rotationDeg: number;
+  role: PortRole;
+}
+export interface PartSegment {
+  id: string;
+  type: SegmentType;
+  transform: Transform3;
+  startPortId: string;
+  endPortId: string;
+  parameters: Record<string, number>;
+}
+export interface SegmentConnection { id: string; fromPortId: string; toPortId: string }
+export interface CustomAttachment {
+  id: string;
+  name: string;
+  hostSegmentId: string;
+  hostSurfaces: Array<'top' | 'bottom' | 'left' | 'right' | 'end-a' | 'end-b'>;
+  position: Vector3;
+  direction: Vector3;
+  profile: PortProfile;
+  widthMm?: number;
+  heightMm?: number;
+  diameterMm?: number;
+  projectionLengthMm: number;
+  collarLengthMm: number;
+  rotationDeg: number;
+  portId: string;
+}
+export interface CustomPartMetadata {
+  partNumber?: string;
+  system: string;
+  material: string;
+  thicknessMm: number;
+  quantity: number;
+  notes: string;
+  verificationStatus: VerificationStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+export interface CustomPartAssembly {
+  id: string;
+  name: string;
+  partNumber?: string;
+  segments: PartSegment[];
+  connections: SegmentConnection[];
+  attachments: CustomAttachment[];
+  ports: ConnectionPort[];
+  metadata: CustomPartMetadata;
+}
 
 export interface RouteItem {
   id: string;
@@ -58,6 +120,12 @@ export interface CustomPart {
   lengthMm: number;
   horizontalOffsetMm: number;
   verticalOffsetMm: number;
+  endADiameterMm: number;
+  endBDiameterMm: number;
+  outletHorizontalAngleDeg: number;
+  outletVerticalAngleDeg: number;
+  outletRotationDeg: number;
+  partNumber?: string;
   quantity: number;
   system: string;
   material: string;
@@ -66,6 +134,7 @@ export interface CustomPart {
   createdAt: string;
   updatedAt: string;
   verificationStatus: VerificationStatus;
+  assembly: CustomPartAssembly;
 }
 
 export type AirflowClassification = 'supply' | 'extract' | 'uncertain';
@@ -112,7 +181,7 @@ export interface AirflowVisibility {
 }
 
 export interface ProjectData {
-  version: 4;
+  version: 5;
   projectName: string;
   drawing: DrawingIdentity | null;
   page: number;

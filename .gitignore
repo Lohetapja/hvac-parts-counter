@@ -9,6 +9,7 @@ coverage/
 # Private construction drawings
 *.pdf
 public/test-drawings/
+/local-test-drawings/
 # Local regression corpus (real HVAC drawings; never commit the PDFs)
 test-drawings/*
 !test-drawings/README.md

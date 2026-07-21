@@ -34,12 +34,31 @@ interface Recognition {
   confidence: number;
 }
 
-const DEVICE_RE = /\b(T\d{0,2}|P\d{0,2}|KSO|KTS|ROX(?:-S)?|OLO|FLO|VIVA(?:-S)?|RISD|IMUKARTIO)\b/i;
 const IRIS_RE = /\b(IRIS)\b/i;
 const PRA_RE = /\b(PRA)\b/i;
 const FIRE_RE = /\b(palopelti|fire damper|EI\d{2,3})\b/i;
 const SILENCER_RE = /\b(vaimennin|silencer|[AÄ][AÄ]NENVAIMENNIN)\b/i;
 const MULT_RE = /^\s*(\d{1,3})\s*(?:x|kpl|st)\b/i;
+// Air-terminal product families are unambiguous. Bare T1/T3/P1 are matched only when
+// standalone (they collide with door/joinery schedule codes like TLO-10x20).
+// Terminal families are only accepted when immediately followed by a size (KTS-125,
+// ROX 200…). Bare "KTS." is the Finnish abbreviation "katso" (see) and must be rejected.
+const FAMILY_RE = /\b(KTS|KSO|ROX|OLO|FLO|VIVA|RISD|IMUKARTIO)(?:-S)?(?=\s*-?\s*\d{2,4})/i;
+const STANDALONE_TERMINAL_RE = /^(?:\d+\s*[x×]\s*)?(T1|T3|P1)$/i;
+const TRIPLE_DIM_RE = /\d+\s*[x×]\s*\d+\s*[x×]\s*\d+/i;
+// Non-duct architectural text: doors/windows (OVI/IKKUNA), service platforms
+// (HOITOTASO), joinery schedule codes (letters-NNxNN-letter), floor levels (+30.250).
+const NON_DUCT_RE = /\b(OVI|IKKUNA|HOITOTASO|TASO|PORRAS|LE-?WC|WC|AULA|K[ÄA]YT[ÄA]V[ÄA]|VAR|SIIV|PUH|OT|TH|ATK)\b/i;
+const SCHEDULE_CODE_RE = /[A-ZÅÄÖ]{1,4}\d*\s*-\s*\d{1,3}\s*[x×]\s*\d{1,3}\b/i;
+
+// Rectangular duct plausibility: real duct sizes are ~100..2500 wide and ~100..1200 tall.
+// Door codes ("10x21") fall below 100; service platforms ("600x1800") exceed 1200 tall.
+function plausibleRectDuct(widthMm: number, heightMm: number): boolean {
+  return widthMm >= 100 && widthMm <= 2500 && heightMm >= 100 && heightMm <= 1200;
+}
+function plausibleRoundDuct(diameterMm: number): boolean {
+  return diameterMm >= 50 && diameterMm <= 1600;
+}
 
 function recognize(raw: string): Recognition | null {
   const normalized = normalizeLabelText(raw);
@@ -48,29 +67,38 @@ function recognize(raw: string): Recognition | null {
   const multMatch = normalized.match(MULT_RE);
   const quantity = multMatch ? Math.max(1, Number(multMatch[1])) : 1;
 
-  if (/\bUR\b/.test(upper)) return { kind: 'ur', nodeType: 'unknown', category: 'Boundary', label: 'UR / urakkaraja', quantity: 1, system: 'unknown', confidence: 0.9 };
+  if (/^UR\b|\bUR$|^UR$/.test(upper) || upper === 'UR') return { kind: 'ur', nodeType: 'unknown', category: 'Boundary', label: 'UR / urakkaraja', quantity: 1, system: 'unknown', confidence: 0.9 };
   if (/\bYL[ÖO]S\b/.test(upper)) return { kind: 'ylos', nodeType: 'continuation', category: 'Continuation', label: 'YLÖS continuation', quantity: 1, system: 'unknown', confidence: 0.85 };
   if (/\bALAS\b/.test(upper)) return { kind: 'alas', nodeType: 'continuation', category: 'Continuation', label: 'ALAS continuation', quantity: 1, system: 'unknown', confidence: 0.85 };
-  if (/\bPL\b/.test(upper)) return { kind: 'cleaning-hatch', nodeType: 'cleaning-hatch', category: 'Access', label: 'PL cleaning hatch', quantity, system: 'unknown', confidence: 0.75 };
-  if (FIRE_RE.test(normalized)) return { kind: 'fire-damper', nodeType: 'fire-damper', category: 'Damper', label: 'Fire damper', quantity, system: 'unknown', confidence: 0.6 };
+  if (/^PL$|^PL\b/.test(upper)) return { kind: 'cleaning-hatch', nodeType: 'cleaning-hatch', category: 'Access', label: 'PL cleaning hatch', quantity, system: 'unknown', confidence: 0.7 };
   if (SILENCER_RE.test(normalized)) return { kind: 'silencer', nodeType: 'silencer', category: 'Silencer', label: 'Silencer', quantity, system: 'unknown', confidence: 0.6 };
   if (IRIS_RE.test(normalized) || PRA_RE.test(normalized)) return { kind: 'damper', nodeType: 'damper', category: 'Damper', label: IRIS_RE.test(normalized) ? 'IRIS damper' : 'PRA damper', quantity, system: 'unknown', confidence: 0.7 };
 
+  // Reject architectural / door-schedule / 3D-object text before size parsing.
+  const architectural = NON_DUCT_RE.test(normalized) || SCHEDULE_CODE_RE.test(normalized) || TRIPLE_DIM_RE.test(normalized);
+
   const parsed = parseDuctLabel(normalized);
-  if (parsed?.profile) {
-    if (parsed.profile.shape === 'round') {
-      // Small round runs off a main are branch candidates; larger are duct runs.
+  if (parsed?.profile && !architectural) {
+    if (parsed.profile.shape === 'round' && plausibleRoundDuct(parsed.profile.diameterMm)) {
       const branch = parsed.profile.diameterMm <= 200;
-      return { kind: 'round-size', nodeType: branch ? 'branch' : 'duct', category: branch ? 'Branch' : 'Duct', label: `${parsed.normalized}${branch ? ' branch' : ' round duct'}`, profile: parsed.profile, quantity, system: 'unknown', confidence: 0.7 };
+      return { kind: 'round-size', nodeType: branch ? 'branch' : 'duct', category: branch ? 'Branch' : 'Duct', label: `${parsed.normalized}${branch ? ' branch' : ' round duct'}`, profile: parsed.profile, quantity, system: 'unknown', confidence: 0.72 };
     }
-    return { kind: 'rect-size', nodeType: 'duct', category: 'Duct', label: `${parsed.normalized} rectangular duct`, profile: parsed.profile, quantity, system: 'unknown', confidence: 0.7 };
+    if (parsed.profile.shape === 'rectangular' && plausibleRectDuct(parsed.profile.widthMm, parsed.profile.heightMm)) {
+      return { kind: 'rect-size', nodeType: 'duct', category: 'Duct', label: `${parsed.normalized} rectangular duct`, profile: parsed.profile, quantity, system: 'unknown', confidence: 0.7 };
+    }
   }
 
-  const device = normalized.match(DEVICE_RE);
-  if (device) {
-    const token = device[1].toUpperCase();
-    const system: SystemKind = token.startsWith('T') ? 'supply' : token.startsWith('P') ? 'extract' : 'unknown';
-    return { kind: 'terminal', nodeType: 'terminal', category: 'Terminal', label: `${normalized} terminal`, quantity, system, confidence: system === 'unknown' ? 0.5 : 0.75 };
+  // Fire class only counts as a fire damper on a duct label context, not on wall EI ratings.
+  if (FIRE_RE.test(normalized) && !architectural && /palopelti|fire damper/i.test(normalized)) {
+    return { kind: 'fire-damper', nodeType: 'fire-damper', category: 'Damper', label: 'Fire damper', quantity, system: 'unknown', confidence: 0.6 };
+  }
+
+  const family = normalized.match(FAMILY_RE);
+  const standalone = normalized.match(STANDALONE_TERMINAL_RE);
+  if ((family || standalone) && !SCHEDULE_CODE_RE.test(normalized)) {
+    const token = (standalone?.[1] ?? family?.[1] ?? '').toUpperCase();
+    const system: SystemKind = /^(T1|T3|TLO|KTS)/.test(token) ? 'supply' : /^(P1|PO|KSO)/.test(token) ? 'extract' : 'unknown';
+    return { kind: 'terminal', nodeType: 'terminal', category: 'Terminal', label: `${normalized} terminal`, quantity, system, confidence: family ? 0.75 : 0.55 };
   }
   return null;
 }
@@ -153,6 +181,12 @@ export function scanDrawing(input: ScanInput): ScanOutput {
 
   const networks = [tulo, poisto, unknown].filter((network) => network.nodeIds.length);
   boundaries.forEach((boundary) => { boundary.relatedNetworkId = (tulo.nodeIds.length ? tulo : poisto.nodeIds.length ? poisto : unknown).id; });
+  // Honest empty result: no placeholder network when the page has no ventilation labels.
+  if (!partCandidates && !boundaries.length) {
+    unresolvedReasons.add(input.textItems.length > 40
+      ? 'No ventilation duct labels detected on this page — it looks like an architectural drawing, not an IV/ventilation drawing.'
+      : 'No recognisable duct labels found. If this is a ventilation drawing, its labels may be drawn as vector geometry rather than text.');
+  }
 
   const scanMs = Math.round(performance.now() - started);
   const summary: ScanSummary = {

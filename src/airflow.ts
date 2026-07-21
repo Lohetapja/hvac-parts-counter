@@ -87,10 +87,16 @@ export function extractLineSegments(operatorList: { fnArray: number[]; argsArray
         const point = apply(matrix, { x: coordinates[cursor] ?? 0, y: coordinates[cursor + 1] ?? 0 }); cursor += 2;
         if (operation === 0) { current = point; start = point; }
         else if (current) { segments.push({ start: current, end: point }); current = point; }
-      } else if (operation === 2) cursor += 6;
-      else if (operation === 3) cursor += 4;
-      else if (operation === 4 && current && start) { segments.push({ start: current, end: start }); current = start; }
-      else cursor += operation === 5 || operation === 6 ? 4 : 0;
+      } else if (operation === 2) {
+        // Cubic bézier (cp1, cp2, end): retain the curve as a chord to its endpoint so
+        // bend geometry is not silently discarded. End point is the last coordinate pair.
+        const end = apply(matrix, { x: coordinates[cursor + 4] ?? 0, y: coordinates[cursor + 5] ?? 0 });
+        if (current) segments.push({ start: current, end }); current = end; start ??= end; cursor += 6;
+      } else if (operation === 3 || operation === 5 || operation === 6) {
+        // Alternate curve encodings (4 coordinates): retain as a chord to the endpoint.
+        const end = apply(matrix, { x: coordinates[cursor + 2] ?? 0, y: coordinates[cursor + 3] ?? 0 });
+        if (current) segments.push({ start: current, end }); current = end; start ??= end; cursor += 4;
+      } else if (operation === 4 && current && start) { segments.push({ start: current, end: start }); current = start; }
     });
   };
   const appendCompactPath = (stream: number[], matrix: number[]): void => {
@@ -112,7 +118,9 @@ export function extractLineSegments(operatorList: { fnArray: number[]; argsArray
     if (operations && coordinates) { appendPath(operations, coordinates, matrix); return; }
     if (Array.isArray(args[1])) args[1].forEach((subpath) => { const stream = numericArray(subpath); if (stream) appendCompactPath(stream, matrix); });
   });
-  return segments.filter((segment) => { const length = Math.hypot(segment.end.x - segment.start.x, segment.end.y - segment.start.y); return length >= 2 && length <= 80; });
+  // Retain duct-scale geometry. The former <=80 unit cap was tuned for tiny airflow
+  // arrowheads and discarded every real duct/wall edge on large-format AutoCAD pages.
+  return segments.filter((segment) => { const length = Math.hypot(segment.end.x - segment.start.x, segment.end.y - segment.start.y); return length >= 1.5 && length <= 8000; });
 }
 
 function endpointDistance(a: Point, b: Point): number { return Math.hypot(a.x - b.x, a.y - b.y); }

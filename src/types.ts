@@ -1,4 +1,4 @@
-import type { ContractBoundary, DuctHighlightState, DuctLabelAssociation, DuctNetwork, DuctNode, DuctPartMapping, DuctSegment, PartDefinition } from './duct-network-types';
+import type { ContractBoundary, DuctHighlightState, DuctLabelAssociation, DuctNetwork, DuctNode, DuctPartMapping, DuctSegment, PartDefinition, ScanState } from './duct-network-types';
 export type * from './duct-network-types';
 
 export type Point = { x: number; y: number };
@@ -184,7 +184,7 @@ export interface AirflowVisibility {
 }
 
 export interface ProjectData {
-  version: 7;
+  version: 8;
   projectName: string;
   drawing: DrawingIdentity | null;
   page: number;
@@ -208,6 +208,7 @@ export interface ProjectData {
   customCatalogue: PartDefinition[];
   disabledCatalogueIds: string[];
   ductHighlight: DuctHighlightState;
+  scan: ScanState;
   createdAt: string;
   updatedAt: string;
 }

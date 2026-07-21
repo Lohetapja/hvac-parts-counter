@@ -29,6 +29,10 @@ export type DuctNodeType =
   | 'terminal'
   | 'end'
   | 'damper'
+  | 'fire-damper'
+  | 'silencer'
+  | 'cleaning-hatch'
+  | 'duct'
   | 'equipment'
   | 'unknown';
 
@@ -83,6 +87,11 @@ export interface DuctNode {
   relatedLabelIds: string[];
   notes?: string;
   verificationStatus: DuctVerificationStatus;
+  // Scan-derived candidate metadata (optional; absent for manually created nodes).
+  confidence?: number;
+  reviewStatus?: ReviewStatus;
+  source?: 'scan' | 'manual';
+  occurrenceKey?: string;
 }
 
 // A size / direction label recognised from PDF text and associated with the nearest
@@ -142,6 +151,57 @@ export interface PartDefinition {
   disabled?: boolean;
 }
 
+// --- Automatic scan model --------------------------------------------------
+export type ScanFieldSource = 'pdf-text' | 'title-block' | 'derived' | 'manual';
+export interface ScanField { value: string; source: ScanFieldSource; confidence: number; }
+
+export interface ScanMetadata {
+  fileName: ScanField;
+  projectName: ScanField;
+  address: ScanField;
+  title: ScanField;
+  floor: ScanField;
+  drawingNumber: ScanField;
+  drawingType: ScanField;
+  scale: ScanField;
+  revision: ScanField;
+  date: ScanField;
+  designer: ScanField;
+  company: ScanField;
+}
+
+export interface ScanSummary {
+  page: number;
+  tuloNetworks: number;
+  poistoNetworks: number;
+  ductMetres: number;
+  fittings: number;
+  devices: number;
+  unresolved: number;
+}
+
+export interface ScanDiagnostics {
+  page: number;
+  scanMs: number;
+  labelCount: number;
+  segmentCount: number;
+  networkCandidates: number;
+  partCandidates: number;
+  unresolvedReasons: string[];
+  labels: Array<{ raw: string; normalized: string; kind: string; x: number; y: number }>;
+}
+
+export interface ScanState {
+  ranAt: string | null;
+  page: number | null;
+  metadata: ScanMetadata | null;
+  summary: ScanSummary | null;
+  diagnostics: ScanDiagnostics | null;
+}
+
+// Confidence lifecycle for scanned candidates.
+export type ReviewStatus = 'confirmed' | 'likely' | 'unresolved' | 'rejected';
+
 export interface DuctHighlightState {
   active: boolean;
   scope: 'none' | 'tulo' | 'poisto' | 'selected' | 'all';
@@ -151,7 +211,7 @@ export interface DuctHighlightState {
 }
 
 // A resolved parts-list row produced from verified network topology.
-export type NetworkPartStatus = 'suggested' | 'verified' | 'manual' | 'rejected';
+export type NetworkPartStatus = 'suggested' | 'verified' | 'manual' | 'rejected' | 'confirmed' | 'likely' | 'unresolved';
 
 export interface NetworkPartRow {
   key: string;
@@ -166,6 +226,8 @@ export interface NetworkPartRow {
   lengthM?: number;
   status: NetworkPartStatus;
   source: 'topology' | 'manual';
+  confidence?: number;
+  occurrences?: Point[];
 }
 
 export function defaultHighlightState(): DuctHighlightState {

@@ -11,6 +11,8 @@ import type { ContractBoundary, ContractScopeSide } from './duct-network-types';
 import { createDemoDuctNetwork } from './duct-fixture';
 import { profileFromSizeText } from './duct-labels';
 import { catalogueName, mergedCatalogue } from './duct-catalogue';
+import { partThumbnail } from './part-thumbnails';
+import type { ScanMetadata } from './duct-network-types';
 
 export interface DuctNetworkContext {
   getProject(): ProjectData;
@@ -26,6 +28,11 @@ export interface DuctNetworkContext {
   getTool(): Tool;
   isMobile(): boolean;
   hasPdf(): boolean;
+  runScan(): Promise<void>;
+  scanBusy(): boolean;
+  exportReport(): void;
+  exportDiagnostics(): void;
+  updateTitleBlockField(key: keyof ScanMetadata, value: string): void;
 }
 
 const SYSTEM_OPTIONS: Array<{ value: DuctSystemType | 'infer'; label: string }> = [
@@ -81,6 +88,7 @@ export function initDuctNetworkUi(context: DuctNetworkContext): DuctNetworkContr
   controlPanel.innerHTML = `
     <div class="panel-header"><h2>Duct Systems</h2><span id="ductNetCount" class="badge muted">0 networks</span></div>
     <div class="panel-body">
+      <details class="duct-titleblock" id="ductTitleBlock"><summary>Scanned project (title block)</summary><div id="ductTitleBlockFields" class="duct-tb-fields"></div></details>
       <p class="help">Highlight complete connected <b>Tulo-kanavisto</b> / <b>Poistokanavisto</b>, then click a network to see its measured lengths and parts.</p>
       <div class="button-row duct-primary"><button class="btn primary duct-hl-tulo" data-duct-action="highlight-tulo">Highlight Tulo</button><button class="btn primary duct-hl-poisto" data-duct-action="highlight-poisto">Highlight Poisto</button></div>
       <div class="button-row"><button class="btn small" data-duct-action="rescan">Rescan drawing</button><button class="btn small" data-duct-action="review-uncertain">Review uncertain connections</button></div>
@@ -99,8 +107,13 @@ export function initDuctNetworkUi(context: DuctNetworkContext): DuctNetworkContr
   const reviewPanel = document.createElement('section');
   reviewPanel.className = 'panel duct-review-panel';
   reviewPanel.innerHTML = `
-    <div class="panel-header"><h2>Duct network review</h2><span id="ductReviewBadge" class="badge">0</span></div>
+    <div class="panel-header"><h2>Scan results</h2><span id="ductReviewBadge" class="badge">0</span></div>
     <div class="panel-body">
+      <button class="btn primary duct-scan-btn" data-duct-action="scan-drawing">Scan drawing</button>
+      <div id="ductScanProgress" class="progress"><span></span></div>
+      <div id="ductScanSummary" class="duct-scan-summary"></div>
+      <div class="button-row"><button class="btn small" data-duct-action="export-report">PDF report</button><button class="btn small ghost" data-duct-action="export-diagnostics">Scan diagnostics (dev)</button></div>
+      <h3>Detected networks</h3>
       <div id="ductNetworkList" class="item-list"></div>
       <div id="ductSelectedEditor" class="duct-editor"></div>
       <h3>Network parts</h3>
@@ -222,9 +235,17 @@ export function initDuctNetworkUi(context: DuctNetworkContext): DuctNetworkContr
     highlight.selectedNetworkId = scope === 'selected' ? selectedNetworkId : highlight.selectedNetworkId;
     if (scope === 'tulo' || scope === 'poisto') {
       const summary = highlightSummary(project(), scope, context.getPage());
-      highlightFeedback.textContent = summary.text;
+      let text = summary.text;
+      if (!summary.networks) {
+        const page = context.getPage();
+        const scanned = project().scan.ranAt && project().scan.page === page;
+        const anyOnPage = project().ductNetworks.some((network) => network.pageNumber === page);
+        const reason = !scanned && !anyOnPage ? ' Run Scan drawing first.' : anyOnPage ? ' Networks were found but none classified as this system — open a network and set Tulo/Poisto.' : ' Classification uncertain.';
+        text += reason;
+      }
+      highlightFeedback.textContent = text;
       highlightFeedback.classList.toggle('empty', summary.networks === 0);
-      context.status(summary.text);
+      context.status(text);
       if (!summary.networks) context.toast(summary.text);
     } else if (scope === 'selected') {
       const network = selectedNetwork();
@@ -236,16 +257,21 @@ export function initDuctNetworkUi(context: DuctNetworkContext): DuctNetworkContr
     context.markChanged();
   }
 
+  function networkPoints(network: DuctNetwork): Point[] {
+    const segmentPoints = networkSegments(project(), network).flatMap((segment) => segment.centrelinePoints);
+    return segmentPoints.length ? segmentPoints : networkNodes(project(), network).map((node) => node.point);
+  }
+
   function fitHighlighted(): void {
     const networks = highlightedNetworks();
-    const points = networks.flatMap((network) => networkSegments(project(), network).flatMap((segment) => segment.centrelinePoints));
+    const points = networks.flatMap((network) => networkPoints(network));
     if (!points.length) { context.toast('Nothing highlighted to fit'); return; }
     context.fitToPoints(points);
   }
 
   function fitNetwork(): void {
     const network = selectedNetwork(); if (!network) return;
-    const points = networkSegments(project(), network).flatMap((segment) => segment.centrelinePoints);
+    const points = networkPoints(network);
     if (points.length) context.fitToPoints(points);
   }
 
@@ -414,9 +440,37 @@ export function initDuctNetworkUi(context: DuctNetworkContext): DuctNetworkContr
       return `<button class="item-card selectable ${selected ? 'selected' : ''}" data-duct-network="${network.id}" style="border-left:4px solid ${systemColor(network.systemType)}"><span><b>${escapeHtml(network.name)}</b><small>${escapeHtml(systemTypeToLabel(network.systemType))} · ${network.verificationStatus} · ${totals.segments} seg · ${totals.lengthM.toFixed(2)} m · Page ${network.pageNumber}</small></span></button>`;
     }).join('') : '<div class="empty-mini">No duct systems yet. Load the demo or select a seed on the drawing.</div>';
 
+    renderScanSummary();
+    renderTitleBlock();
     renderEditor();
     renderParts();
     renderCatalogue();
+  }
+
+  const TB_FIELDS: Array<{ key: keyof ScanMetadata; label: string }> = [
+    { key: 'projectName', label: 'Project' }, { key: 'address', label: 'Address' }, { key: 'title', label: 'Title' },
+    { key: 'floor', label: 'Floor' }, { key: 'drawingNumber', label: 'Drawing no.' }, { key: 'scale', label: 'Scale' },
+    { key: 'revision', label: 'Revision' }, { key: 'date', label: 'Date' }, { key: 'designer', label: 'Designer' }, { key: 'company', label: 'Company' },
+  ];
+  function renderTitleBlock(): void {
+    const host = byId<HTMLDivElement>('ductTitleBlockFields');
+    const meta = project().scan.metadata;
+    if (!meta) { host.innerHTML = '<p class="help">Scan the drawing to read the title block.</p>'; return; }
+    host.innerHTML = TB_FIELDS.map((field) => {
+      const value = meta[field.key];
+      const badge = value.confidence >= 0.7 ? 'ok' : value.confidence > 0 ? 'warn' : 'muted';
+      return `<label class="duct-tb-field"><span class="label">${field.label} <i class="tb-conf ${badge}">${Math.round(value.confidence * 100)}%</i></span><input class="input" data-tb-field="${field.key}" value="${escapeHtml(value.value)}"></label>`;
+    }).join('');
+  }
+
+  function renderScanSummary(): void {
+    const scanButton = reviewPanel.querySelector<HTMLButtonElement>('.duct-scan-btn');
+    if (scanButton) { scanButton.disabled = context.scanBusy() || !context.hasPdf(); scanButton.textContent = context.scanBusy() ? 'Scanning…' : 'Scan drawing'; }
+    byId('ductScanProgress').classList.toggle('active', context.scanBusy());
+    const summary = project().scan.summary;
+    const host = byId<HTMLDivElement>('ductScanSummary');
+    if (!summary) { host.innerHTML = context.hasPdf() ? '<div class="empty-mini">Click Scan drawing to detect networks and parts.</div>' : '<div class="empty-mini">Upload a PDF, then Scan drawing.</div>'; return; }
+    host.innerHTML = `<div class="duct-scan-complete">SCAN COMPLETE · page ${summary.page}</div><div class="duct-counts"><div><b>${summary.tuloNetworks}</b><span>Tulo</span></div><div><b>${summary.poistoNetworks}</b><span>Poisto</span></div><div><b>${summary.ductMetres.toFixed(1)} m</b><span>Duct</span></div><div><b>${summary.fittings}</b><span>Fittings</span></div><div><b>${summary.devices}</b><span>Devices</span></div><div class="${summary.unresolved ? 'warn' : ''}"><b>${summary.unresolved}</b><span>Unresolved</span></div></div>`;
   }
 
   function renderEditor(): void {
@@ -477,11 +531,33 @@ export function initDuctNetworkUi(context: DuctNetworkContext): DuctNetworkContr
   function renderParts(): void {
     const listElement = byId<HTMLDivElement>('ductPartsList');
     const network = selectedNetwork();
-    if (!network) { listElement.innerHTML = '<div class="empty-mini">Select a network to see its parts.</div>'; return; }
+    if (!network) { listElement.innerHTML = '<div class="empty-mini">Highlight then click a network to see its parts.</div>'; return; }
     const rows = countNetworkParts(project(), network);
     const rejected = project().ductPartMappings.filter((mapping) => mapping.networkId === network.id && mapping.status === 'rejected');
-    listElement.innerHTML = (rows.length ? rows.map((row) => `<div class="summary-row"><b>${escapeHtml(row.label)}</b><span>${escapeHtml(row.category)} · ${escapeHtml(row.status)}${row.lengthM !== undefined ? ` · ${row.lengthM.toFixed(2)} m` : ''}</span><strong>${row.quantity}×</strong><button class="btn small ghost danger duct-reject" data-duct-reject="${escapeHtml(row.key)}" data-duct-reject-net="${network.id}">Reject</button></div>`).join('') : '<div class="empty-mini">No parts derived yet.</div>')
+    listElement.innerHTML = (rows.length ? rows.map((row) => {
+      const conf = row.confidence !== undefined ? ` · ${Math.round(row.confidence * 100)}%` : '';
+      const occ = row.occurrences?.length ? `<button class="btn small ghost" data-duct-show="${escapeHtml(row.key)}">Show on drawing</button><button class="btn small ghost" data-duct-occ-prev="${escapeHtml(row.key)}">◀</button><button class="btn small ghost" data-duct-occ-next="${escapeHtml(row.key)}">▶</button>` : '';
+      return `<div class="duct-part-card status-${escapeHtml(row.status)}"><div class="duct-part-thumb">${partThumbnail(row.category, row.shape, row.size)}</div><div class="duct-part-main"><b>${escapeHtml(row.label)}</b><small>${escapeHtml(row.category)} · ${escapeHtml(row.status)}${conf}${row.lengthM !== undefined ? ` · ${row.lengthM.toFixed(2)} m` : ''}</small><div class="duct-part-actions">${occ}<button class="btn small ghost danger duct-reject" data-duct-reject="${escapeHtml(row.key)}" data-duct-reject-net="${network.id}">Reject</button></div></div><strong class="duct-part-qty">${row.quantity}×</strong></div>`;
+    }).join('') : '<div class="empty-mini">No parts derived yet. Scan the drawing or load the demo.</div>')
       + (rejected.length ? `<div class="duct-rejected">${rejected.length} rejected item(s): ${rejected.map((mapping) => `<button class="btn small ghost" data-duct-restore="${escapeHtml(mapping.fittingKey)}" data-duct-restore-net="${network.id}">${escapeHtml(mapping.fittingKey)}</button>`).join(' ')}</div>` : '');
+  }
+
+  let occurrenceCursor = new Map<string, number>();
+  function partOccurrences(key: string): Point[] {
+    const network = selectedNetwork(); if (!network) return [];
+    return countNetworkParts(project(), network).find((row) => `${network.id}|${row.key}` === `${network.id}|${key}` || row.key === key)?.occurrences ?? [];
+  }
+  function showPartOccurrences(key: string): void {
+    const points = partOccurrences(key);
+    if (!points.length) { context.toast('No drawing location for this part'); return; }
+    context.fitToPoints(points); context.status(`Showing ${points.length} occurrence(s) of this part.`);
+  }
+  function cycleOccurrence(key: string, direction: 1 | -1): void {
+    const points = partOccurrences(key); if (!points.length) return;
+    const current = (occurrenceCursor.get(key) ?? -1) + direction;
+    const index = ((current % points.length) + points.length) % points.length;
+    occurrenceCursor.set(key, index);
+    context.fitToPoints([points[index]]); context.status(`Occurrence ${index + 1} of ${points.length}.`);
   }
 
   function renderCatalogue(): void {
@@ -535,10 +611,11 @@ export function initDuctNetworkUi(context: DuctNetworkContext): DuctNetworkContr
       context2d.stroke(); context2d.restore();
     });
     networkNodes(project(), network).forEach((node) => drawNode(context2d, renderScale, node, color, alpha));
-    // Network badge at first in-scope segment midpoint.
+    // Network badge at first in-scope segment midpoint, or first node for scanned networks.
     const first = networkSegments(project(), network).find((segment) => !excluded.has(segment.id)) ?? networkSegments(project(), network)[0];
-    if (view.showLabels && first && first.centrelinePoints.length) {
-      const anchor = first.centrelinePoints[Math.floor(first.centrelinePoints.length / 2)];
+    const badgeAnchor = first && first.centrelinePoints.length ? first.centrelinePoints[Math.floor(first.centrelinePoints.length / 2)] : networkNodes(project(), network)[0]?.point;
+    if (view.showLabels && badgeAnchor) {
+      const anchor = badgeAnchor;
       context2d.save(); context2d.globalAlpha = alpha; context2d.font = '700 11px system-ui';
       const text = `${network.systemType === 'supply' ? 'Tulo' : extract ? 'Poisto' : 'Muu'} · ${network.name}`;
       const width = context2d.measureText(text).width + 12;
@@ -613,6 +690,9 @@ export function initDuctNetworkUi(context: DuctNetworkContext): DuctNetworkContr
       case 'prev-network': cycleNetwork(-1); break;
       case 'next-network': cycleNetwork(1); break;
       case 'rescan': rescan(); break;
+      case 'scan-drawing': void context.runScan(); break;
+      case 'export-report': context.exportReport(); break;
+      case 'export-diagnostics': context.exportDiagnostics(); break;
       case 'review-uncertain': reviewUncertain(); break;
       case 'mark-ur': markUR(); break;
       case 'mark-terminal': markNode('terminal'); break;
@@ -652,6 +732,12 @@ export function initDuctNetworkUi(context: DuctNetworkContext): DuctNetworkContr
     if (segmentButton) { selectedSegmentId = segmentButton.dataset.ductSegment ?? null; selectedNodeId = null; context.markChanged(); return; }
     const nodeButton = target.closest<HTMLElement>('[data-duct-node]');
     if (nodeButton) { selectedNodeId = nodeButton.dataset.ductNode ?? null; selectedSegmentId = null; context.markChanged(); return; }
+    const showButton = target.closest<HTMLElement>('[data-duct-show]');
+    if (showButton) { showPartOccurrences(showButton.dataset.ductShow ?? ''); return; }
+    const occPrev = target.closest<HTMLElement>('[data-duct-occ-prev]');
+    if (occPrev) { cycleOccurrence(occPrev.dataset.ductOccPrev ?? '', -1); return; }
+    const occNext = target.closest<HTMLElement>('[data-duct-occ-next]');
+    if (occNext) { cycleOccurrence(occNext.dataset.ductOccNext ?? '', 1); return; }
     const rejectButton = target.closest<HTMLElement>('[data-duct-reject]');
     if (rejectButton) { rejectPart(rejectButton.dataset.ductRejectNet ?? '', rejectButton.dataset.ductReject ?? ''); return; }
     const restoreButton = target.closest<HTMLElement>('[data-duct-restore]');
@@ -670,6 +756,8 @@ export function initDuctNetworkUi(context: DuctNetworkContext): DuctNetworkContr
     if (viewToggle) { const key = viewToggle.dataset.ductView as keyof typeof view; view[key] = viewToggle.checked; context.requestOverlay(); return; }
     const notesInput = target.closest<HTMLInputElement>('[data-duct-notes]');
     if (notesInput) { const network = selectedNetwork(); if (network) { network.notes = notesInput.value; touch(network); context.markChanged(); } return; }
+    const tbField = target.closest<HTMLInputElement>('[data-tb-field]');
+    if (tbField) { context.updateTitleBlockField(tbField.dataset.tbField as keyof ScanMetadata, tbField.value); return; }
     const catalogue = target.closest<HTMLInputElement>('[data-duct-catalogue]');
     if (catalogue) {
       const id = catalogue.dataset.ductCatalogue ?? ''; const disabled = !catalogue.checked;
@@ -705,6 +793,7 @@ export function ensureDuctDefaults(project: ProjectData): void {
   project.customCatalogue ??= [];
   project.disabledCatalogueIds ??= [];
   project.ductHighlight ??= { active: false, scope: 'none', showOnly: false, dimOthers: false, selectedNetworkId: null };
+  project.scan ??= { ranAt: null, page: null, metadata: null, summary: null, diagnostics: null };
   // Keep authored/geometry lengths consistent if segments were traced under a prior calibration.
   void recomputeSegmentLengths; void catalogueName;
 }

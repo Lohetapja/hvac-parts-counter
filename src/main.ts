@@ -9,7 +9,11 @@ import { initCustomPartBuilder } from './custom-part-builder';
 import { profileForEnd, syncCustomPartAssembly } from './custom-part-assembly';
 import { downloadCustomPartPdf } from './custom-part-pdf';
 import { ensureDuctDefaults, initDuctNetworkUi, type DuctNetworkController } from './duct-network-ui';
-import { networkTotals, countNetworkParts } from './duct-network';
+import { networkTotals, countNetworkParts, removeNetwork } from './duct-network';
+import { scanDrawing } from './duct-scan';
+import { scaleRatioFromTitleBlock } from './title-block';
+import { takeoffReportBlob } from './takeoff-report';
+import type { ScanMetadata } from './duct-network-types';
 import type { AirflowClassification, AirflowMarker, CustomPart, DetectionLocation, DetectionSuggestion, PartItem, Point, ProjectData, RouteItem, Tool } from './types';
 import './styles.css';
 
@@ -28,12 +32,13 @@ function uid(prefix: string): string { return `${prefix}-${Date.now()}-${Math.ra
 function freshProject(): ProjectData {
   const timestamp = now();
   return {
-    version: 7, projectName: 'Tomorrow HVAC Takeoff', drawing: null, page: 1, scaleRatio: 50, customScaleRatio: 50,
+    version: 8, projectName: 'Tomorrow HVAC Takeoff', drawing: null, page: 1, scaleRatio: 50, customScaleRatio: 50,
     calibration: { mode: 'preset', mmPerPdfPoint: presetMmPerPdfPoint(50) }, routes: [], parts: [], customParts: [],
     airflowMarkers: [], temporaryDuctAxes: [], airflowVisibility: { showSupply: true, showExtract: true, showUncertain: true, verifiedOnly: false, showLabels: true, showVectors: true },
     rejectedDetectionIds: [],
     ductNetworks: [], ductSegments: [], ductNodes: [], ductLabels: [], ductPartMappings: [], contractBoundaries: [], customCatalogue: [], disabledCatalogueIds: [],
     ductHighlight: { active: false, scope: 'none', showOnly: false, dimOthers: false, selectedNetworkId: null },
+    scan: { ranAt: null, page: null, metadata: null, summary: null, diagnostics: null },
     createdAt: timestamp, updatedAt: timestamp,
   };
 }
@@ -85,12 +90,15 @@ let pageSegments = new Map<number, LineSegment[]>();
 let pageArrowCandidates = new Map<number, ArrowCandidate[]>();
 let scanCancelled = false;
 let panState: { x: number; y: number; left: number; top: number } | null = null;
+const activePointers = new Map<number, { x: number; y: number }>();
+let pinchState: { startDistance: number; startZoom: number } | null = null;
 let undoStack: HistoryEntry[] = [];
 let redoStack: HistoryEntry[] = [];
 let saveTimer = 0;
 let activeWorkspace: 'takeoff' | 'builder' | 'materials' = 'takeoff';
 let builderController: ReturnType<typeof initCustomPartBuilder>;
 let ductUi: DuctNetworkController;
+let scanBusy = false;
 
 const app = document.querySelector<HTMLDivElement>('#app');
 if (!app) throw new Error('Missing #app root');
@@ -887,6 +895,102 @@ async function cachedDuctLines(): Promise<Array<{ start: Point; end: Point }>> {
   return (pageSegments.get(project.page) ?? []).map((segment) => ({ start: segment.start, end: segment.end }));
 }
 
+// --- Cursor-centred zoom ---------------------------------------------------
+async function zoomAtClient(clientX: number, clientY: number, nextZoom: number): Promise<void> {
+  if (!pdfPage) return;
+  const clamped = Math.max(0.25, Math.min(6, nextZoom));
+  if (Math.abs(clamped - zoomFactor) < 0.0005) return;
+  const canvasRect = els.overlayCanvas.getBoundingClientRect();
+  // PDF point currently under the pointer (canvas-space at scale 1).
+  const pdfX = (clientX - canvasRect.left) / renderScale;
+  const pdfY = (clientY - canvasRect.top) / renderScale;
+  zoomFactor = clamped;
+  await renderPage();
+  // Measure where that PDF point now sits and nudge scroll so it returns under the
+  // pointer. This is exact regardless of the stage's auto-centring margins.
+  const after = els.overlayCanvas.getBoundingClientRect();
+  els.viewerScroll.scrollLeft += (after.left + pdfX * renderScale) - clientX;
+  els.viewerScroll.scrollTop += (after.top + pdfY * renderScale) - clientY;
+  drawOverlay();
+}
+function zoomAtViewportCentre(nextZoom: number): void {
+  const rect = els.viewerScroll.getBoundingClientRect();
+  void zoomAtClient(rect.left + rect.width / 2, rect.top + rect.height / 2, nextZoom);
+}
+
+// --- Automatic scan --------------------------------------------------------
+async function runScan(): Promise<void> {
+  if (!pdfPage) { toast('Upload a PDF first'); return; }
+  if (scanBusy) return;
+  scanBusy = true; renderUi(); loading(true);
+  const started = performance.now();
+  try {
+    status('Scan A/E — reading title block and text labels…');
+    const viewport = pdfPage.getViewport({ scale: 1 });
+    const textContent = await pdfPage.getTextContent();
+    const textItems = textContent.items
+      .filter((item): item is typeof item & { str: string; transform: number[] } => 'str' in item && 'transform' in item)
+      .map((item) => ({ text: item.str, x: item.transform[4] ?? 0, y: item.transform[5] ?? 0, width: Math.abs((item as { width?: number }).width ?? 0), height: Math.max(1, Math.abs(item.transform[3] ?? item.transform[0] ?? 10)) }))
+      .filter((item) => item.text.trim());
+    status('Scan C — indexing vector geometry…');
+    await ensurePageGeometry();
+    const segments = (pageSegments.get(project.page) ?? []).map((segment) => ({ start: segment.start, end: segment.end }));
+    await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+    status('Scan D/F — building networks and classifying systems…');
+    const result = scanDrawing({ page: project.page, fileName: project.drawing?.fileName ?? 'drawing.pdf', pageWidth: viewport.width, pageHeight: viewport.height, textItems, segments, mmPerPdfPoint: project.calibration.mmPerPdfPoint });
+
+    // Convert candidate points from PDF space to canvas (overlay) space.
+    const toViewport = (point: Point): Point => { const [vx, vy] = viewport.convertToViewportPoint(point.x, point.y); return { x: vx, y: vy }; };
+    result.nodes.forEach((node) => { node.point = toViewport(node.point); });
+    result.boundaries.forEach((boundary) => { boundary.point = toViewport(boundary.point); });
+
+    // Replace any previous scan-sourced networks on this page.
+    project.ductNetworks.filter((network) => network.pageNumber === project.page && network.source === 'assisted-vector' && network.notes.startsWith('Auto-scanned')).map((network) => network.id).forEach((id) => removeNetwork(project, id));
+    project.ductNetworks.push(...result.networks);
+    project.ductSegments.push(...result.segments);
+    project.ductNodes.push(...result.nodes);
+    project.contractBoundaries.push(...result.boundaries);
+    result.summary.ductMetres = project.ductNetworks.filter((network) => network.pageNumber === project.page).reduce((sum, network) => sum + networkTotals(project, network).lengthM, 0);
+    project.scan = { ranAt: now(), page: project.page, metadata: result.metadata, summary: result.summary, diagnostics: result.diagnostics };
+
+    const ratio = scaleRatioFromTitleBlock(result.metadata);
+    if (ratio && project.calibration.mode === 'preset') { project.scaleRatio = ratio; project.calibration = { mode: 'preset', mmPerPdfPoint: presetMmPerPdfPoint(ratio) }; els.scalePreset.value = [20, 50, 100, 200].includes(ratio) ? String(ratio) : 'custom'; els.customScale.value = String(ratio); }
+    els.projectName.value = result.metadata.projectName.value || els.projectName.value;
+    markChanged();
+    const elapsed = Math.round(performance.now() - started);
+    toast(`Scan complete: ${result.summary.tuloNetworks} Tulo, ${result.summary.poistoNetworks} Poisto, ${result.diagnostics.partCandidates} candidates`);
+    status(`Scan complete in ${elapsed} ms — ${result.diagnostics.labelCount} labels, ${result.diagnostics.partCandidates} part candidates, ${result.summary.unresolved} unresolved.`);
+  } catch (error) {
+    console.error('Scan failed', error); status('Scan failed: geometry or text parsing was unavailable for this PDF.'); toast('Scan failed — see console');
+  } finally { scanBusy = false; loading(false); renderUi(); }
+}
+
+function exportScanReport(): void {
+  if (!project.ductNetworks.length && !project.scan.ranAt) { toast('Scan the drawing or load a demo first'); return; }
+  const base = `${safeFileBase(project.projectName)}-${exportDate()}`;
+  const blob = takeoffReportBlob(project);
+  const file = new File([blob], `${base}-report.pdf`, { type: 'application/pdf' });
+  const nav = navigator as Navigator & { canShare?: (data: { files: File[] }) => boolean };
+  if (nav.canShare && nav.canShare({ files: [file] }) && typeof navigator.share === 'function') {
+    navigator.share({ files: [file], title: 'HVAC takeoff report' }).catch(() => downloadBlob(blob, file.name));
+  } else downloadBlob(blob, file.name);
+  toast('PDF takeoff report created');
+}
+function downloadBlob(blob: Blob, name: string): void {
+  const url = URL.createObjectURL(blob); const anchor = document.createElement('a'); anchor.href = url; anchor.download = name; anchor.click(); window.setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+function exportScanDiagnostics(): void {
+  if (!project.scan.diagnostics) { toast('Run a scan first'); return; }
+  download(`${safeFileBase(project.projectName)}-scan-diagnostics.json`, JSON.stringify(project.scan.diagnostics, null, 2), 'application/json');
+  toast('Scan diagnostics exported');
+}
+function updateTitleBlockField(key: keyof ScanMetadata, value: string): void {
+  if (!project.scan.metadata) return;
+  project.scan.metadata[key] = { value, source: 'manual', confidence: 1 };
+  if (key === 'projectName' && value.trim()) els.projectName.value = value;
+  markChanged();
+}
+
 builderController = initCustomPartBuilder(els.customBuilderWorkspace, { onSave: saveCustomPart, onChange: updateCustomPartDraft, notify: toast });
 builderController.setActive(false);
 
@@ -904,6 +1008,11 @@ ductUi = initDuctNetworkUi({
   getTool: () => tool,
   isMobile: () => window.innerWidth <= 600,
   hasPdf: () => Boolean(pdfPage),
+  runScan,
+  scanBusy: () => scanBusy,
+  exportReport: exportScanReport,
+  exportDiagnostics: exportScanDiagnostics,
+  updateTitleBlockField,
 });
 
 document.querySelectorAll<HTMLButtonElement>('[data-workspace]').forEach((button) => button.addEventListener('click', () => switchWorkspace(button.dataset.workspace as 'takeoff' | 'builder' | 'materials')));
@@ -941,13 +1050,25 @@ els.clearAirflowBtn.addEventListener('click', () => { if (!project.airflowMarker
 els.airflowFilter.addEventListener('change', renderUi); els.airflowSort.addEventListener('change', renderUi);
 els.airflowTotals.addEventListener('click', (event) => { const target = (event.target as HTMLElement).closest<HTMLElement>('[data-airflow-classification],[data-airflow-filter]'); if (!target) return; const classification = target.dataset.airflowClassification; if (classification === 'supply' || classification === 'extract') selectAirflowClassification(classification); else if (target.dataset.airflowFilter) { els.airflowFilter.value = target.dataset.airflowFilter; renderUi(); } });
 ([['showSupply', 'showSupply'], ['showExtract', 'showExtract'], ['showUncertain', 'showUncertain'], ['verifiedOnly', 'verifiedOnly'], ['showAirflowLabels', 'showLabels'], ['showAirflowVectors', 'showVectors']] as const).forEach(([elementKey, setting]) => { els[elementKey].addEventListener('change', () => { project.airflowVisibility[setting] = els[elementKey].checked; markChanged(); }); });
-els.zoomInBtn.addEventListener('click', () => { zoomFactor = Math.min(6, zoomFactor * 1.25); void renderPage(); }); els.zoomOutBtn.addEventListener('click', () => { zoomFactor = Math.max(0.25, zoomFactor / 1.25); void renderPage(); }); els.fitBtn.addEventListener('click', () => void fitAndRender()); els.undoBtn.addEventListener('click', undo); els.redoBtn.addEventListener('click', redo);
+els.zoomInBtn.addEventListener('click', () => zoomAtViewportCentre(zoomFactor * 1.25)); els.zoomOutBtn.addEventListener('click', () => zoomAtViewportCentre(zoomFactor / 1.25)); els.fitBtn.addEventListener('click', () => void fitAndRender()); els.undoBtn.addEventListener('click', undo); els.redoBtn.addEventListener('click', redo);
 els.pageSelect.addEventListener('change', () => { const page = Number(els.pageSelect.value); void openPage(page, true).then(() => { markChanged(); status(`Viewing page ${page}.`); }).catch((error: unknown) => { console.error(error); toast('Could not open that page'); }); });
 els.scanBtn.addEventListener('click', () => void scanPage()); els.exportSummaryBtn.addEventListener('click', () => exportProject('summary')); els.exportDetailBtn.addEventListener('click', () => exportProject('detail')); els.exportJsonBtn.addEventListener('click', () => exportProject('json'));
 document.querySelectorAll<HTMLButtonElement>('[data-tool]').forEach((button) => button.addEventListener('click', () => setTool(button.dataset.tool as Tool)));
 
+function pinchMetrics(): { distance: number; cx: number; cy: number } | null {
+  const points = [...activePointers.values()];
+  if (points.length < 2) return null;
+  const [a, b] = points;
+  return { distance: Math.hypot(a.x - b.x, a.y - b.y), cx: (a.x + b.x) / 2, cy: (a.y + b.y) / 2 };
+}
 els.overlayCanvas.addEventListener('pointerdown', (event) => {
   if (!pdfPage) return;
+  activePointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+  if (activePointers.size === 2) {
+    const metrics = pinchMetrics();
+    if (metrics) { pinchState = { startDistance: metrics.distance, startZoom: zoomFactor }; panState = null; }
+    return;
+  }
   if (tool === 'pan') {
     const point = eventPoint(event); const marker = hitAirflow(point); if (marker) { selectedAirflowIds = new Set([marker.id]); renderUi(); return; }
     if (ductUi?.hitTest(point, renderScale)) return;
@@ -963,19 +1084,25 @@ els.overlayCanvas.addEventListener('pointerdown', (event) => {
   else if (tool === 'network-seed' || tool === 'network-trace') ductUi?.handleCanvasClick(point);
 });
 els.overlayCanvas.addEventListener('pointermove', (event) => {
+  if (activePointers.has(event.pointerId)) activePointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+  if (pinchState) {
+    const metrics = pinchMetrics();
+    if (metrics && metrics.distance > 0) void zoomAtClient(metrics.cx, metrics.cy, pinchState.startZoom * (metrics.distance / pinchState.startDistance));
+    return;
+  }
   if (tool === 'pan' && panState) { els.viewerScroll.scrollLeft = panState.left - (event.clientX - panState.x); els.viewerScroll.scrollTop = panState.top - (event.clientY - panState.y); }
   else if (tool === 'trace' && currentTrace.length) { previewPoint = eventPoint(event); drawOverlay(); }
   else if ((tool === 'airflow' && airflowDraft.length) || (tool === 'axis' && axisDraft.length)) { previewPoint = eventPoint(event); drawOverlay(); }
   else if (tool === 'network-trace' && (ductUi?.getTraceDraft().length ?? 0)) { previewPoint = eventPoint(event); drawOverlay(); }
 });
 els.overlayCanvas.addEventListener('pointerleave', () => { if (tool === 'trace' || tool === 'airflow' || tool === 'axis' || tool === 'network-trace') { previewPoint = null; drawOverlay(); } });
-els.overlayCanvas.addEventListener('pointerup', (event) => { if (panState) { panState = null; if (els.overlayCanvas.hasPointerCapture(event.pointerId)) els.overlayCanvas.releasePointerCapture(event.pointerId); els.overlayCanvas.style.cursor = 'grab'; } });
-els.overlayCanvas.addEventListener('pointercancel', () => { panState = null; els.overlayCanvas.style.cursor = tool === 'pan' ? 'grab' : 'crosshair'; });
+els.overlayCanvas.addEventListener('pointerup', (event) => { activePointers.delete(event.pointerId); if (activePointers.size < 2) pinchState = null; if (panState) { panState = null; if (els.overlayCanvas.hasPointerCapture(event.pointerId)) els.overlayCanvas.releasePointerCapture(event.pointerId); els.overlayCanvas.style.cursor = 'grab'; } });
+els.overlayCanvas.addEventListener('pointercancel', (event) => { activePointers.delete(event.pointerId); if (activePointers.size < 2) pinchState = null; panState = null; els.overlayCanvas.style.cursor = tool === 'pan' ? 'grab' : 'crosshair'; });
 els.overlayCanvas.addEventListener('dblclick', (event) => {
   if (tool === 'trace') { event.preventDefault(); if (currentTrace.length > 2) currentTrace.pop(); finishTrace(); }
   else if (tool === 'network-trace') { event.preventDefault(); ductUi?.handleTraceCommit(); }
 });
-els.viewerScroll.addEventListener('wheel', (event) => { if (!event.ctrlKey || !pdfPage) return; event.preventDefault(); zoomFactor = Math.max(0.25, Math.min(6, zoomFactor * (event.deltaY < 0 ? 1.15 : 1 / 1.15))); void renderPage(); }, { passive: false });
+els.viewerScroll.addEventListener('wheel', (event) => { if (!pdfPage) return; event.preventDefault(); void zoomAtClient(event.clientX, event.clientY, zoomFactor * (event.deltaY < 0 ? 1.15 : 1 / 1.15)); }, { passive: false });
 els.detectionList.addEventListener('click', (event) => { const target = event.target as HTMLElement; const accept = target.dataset.accept; const reject = target.dataset.reject; if (accept) acceptDetection(accept); if (reject) rejectDetection(reject); });
 els.airflowReviewList.addEventListener('change', (event) => { const input = (event.target as HTMLElement).closest<HTMLInputElement>('[data-airflow-select]'); if (!input) return; const id = input.dataset.airflowSelect ?? ''; if (input.checked) { selectedAirflowIds.add(id); focusedAirflowId = id; } else { selectedAirflowIds.delete(id); if (focusedAirflowId === id) focusedAirflowId = null; } renderUi(); });
 els.airflowGroups.addEventListener('click', (event) => { const target = (event.target as HTMLElement).closest<HTMLButtonElement>('[data-airflow-group]'); if (!target) return; const id = target.dataset.airflowGroup; selectedAirflowIds = new Set(project.airflowMarkers.filter((marker) => marker.nearestRouteId === id || marker.temporaryAxisId === id).map((marker) => marker.id)); const route = project.routes.find((item) => item.id === id); if (route) selectRoute(route); else renderUi(); });

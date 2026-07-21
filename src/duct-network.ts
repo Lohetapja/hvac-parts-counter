@@ -219,6 +219,21 @@ function isRejected(project: ProjectData, networkId: string, fittingKey: string)
 
 function branchProfileOf(node: DuctNode): DuctProfile | undefined { return node.outgoingProfile ?? node.incomingProfile; }
 
+function categoryForNode(type: DuctNode['type']): string {
+  switch (type) {
+    case 'bend': return 'Bend';
+    case 'transition': return 'Transition';
+    case 'branch': return 'Branch';
+    case 'terminal': return 'Terminal';
+    case 'continuation': return 'Continuation';
+    case 'damper': case 'fire-damper': return 'Damper';
+    case 'silencer': return 'Silencer';
+    case 'cleaning-hatch': return 'Access';
+    case 'duct': return 'Duct';
+    default: return 'Component';
+  }
+}
+
 // Builds the parts list for a single network. Automatically derived parts are marked
 // "suggested"; parts from a verified network are "verified" unless a mapping rejects them.
 export function countNetworkParts(project: ProjectData, network: DuctNetwork): NetworkPartRow[] {
@@ -236,13 +251,27 @@ export function countNetworkParts(project: ProjectData, network: DuctNetwork): N
   const baseStatus: NetworkPartRow['status'] = verified ? 'verified' : 'suggested';
   const rows = new Map<string, NetworkPartRow>();
 
-  const add = (partial: Omit<NetworkPartRow, 'networkId' | 'status' | 'source'> & { status?: NetworkPartRow['status']; source?: NetworkPartRow['source'] }): void => {
+  const add = (partial: Omit<NetworkPartRow, 'networkId' | 'status' | 'source'> & { status?: NetworkPartRow['status']; source?: NetworkPartRow['source']; confidence?: number; occurrence?: Point }): void => {
     const key = `${network.id}|${partial.key}`;
     if (isRejected(project, network.id, partial.key)) return;
     const existing = rows.get(key);
-    if (existing) { existing.quantity += partial.quantity; if (partial.lengthM !== undefined) existing.lengthM = (existing.lengthM ?? 0) + partial.lengthM; return; }
-    rows.set(key, { networkId: network.id, status: partial.status ?? baseStatus, source: partial.source ?? 'topology', key: partial.key, catalogueId: partial.catalogueId, category: partial.category, label: partial.label, shape: partial.shape, size: partial.size, angleDeg: partial.angleDeg, quantity: partial.quantity, lengthM: partial.lengthM });
+    if (existing) {
+      existing.quantity += partial.quantity;
+      if (partial.lengthM !== undefined) existing.lengthM = (existing.lengthM ?? 0) + partial.lengthM;
+      if (partial.occurrence) (existing.occurrences ??= []).push(partial.occurrence);
+      if (partial.confidence !== undefined) existing.confidence = Math.min(existing.confidence ?? 1, partial.confidence);
+      return;
+    }
+    rows.set(key, { networkId: network.id, status: partial.status ?? baseStatus, source: partial.source ?? 'topology', key: partial.key, catalogueId: partial.catalogueId, category: partial.category, label: partial.label, shape: partial.shape, size: partial.size, angleDeg: partial.angleDeg, quantity: partial.quantity, lengthM: partial.lengthM, confidence: partial.confidence, occurrences: partial.occurrence ? [partial.occurrence] : undefined });
   };
+
+  // Scan-derived candidate components (label/symbol driven), grouped by occurrence key.
+  const scanNodes = nodes.filter((node) => node.source === 'scan');
+  scanNodes.forEach((node) => {
+    const key = node.occurrenceKey ?? `scan|${node.type}`;
+    const status: NetworkPartRow['status'] = node.reviewStatus === 'confirmed' ? 'confirmed' : node.reviewStatus === 'rejected' ? 'rejected' : node.reviewStatus === 'unresolved' ? 'unresolved' : 'likely';
+    add({ key, catalogueId: '', category: categoryForNode(node.type), label: node.notes ?? node.type, shape: node.incomingProfile?.shape === 'round' ? 'round' : node.incomingProfile?.shape === 'rectangular' ? 'rectangular' : 'both', size: profileLabel(node.incomingProfile), quantity: 1, status, source: 'topology', confidence: node.confidence, occurrence: node.point });
+  });
 
   // Straight duct grouped by profile.
   segments.forEach((segment) => {
@@ -253,7 +282,7 @@ export function countNetworkParts(project: ProjectData, network: DuctNetwork): N
   });
 
   nodes.forEach((node) => {
-    if (node.verificationStatus === 'suggested' && !verified) { /* still counted, status suggested */ }
+    if (node.source === 'scan') return; // scan nodes are counted above
     const profile = node.incomingProfile ?? node.outgoingProfile;
     const round = profile?.shape === 'round';
     const size = profileLabel(profile);

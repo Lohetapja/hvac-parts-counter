@@ -1,5 +1,5 @@
 import type { Point, ProjectData, Tool } from './types';
-import type { DuctNetwork, DuctNode, DuctSegment, DuctSystemType } from './duct-network-types';
+import type { DuctNetwork, DuctNode, DuctProfile, DuctSegment, DuctSystemType } from './duct-network-types';
 import { profileLabel, systemTypeToLabel } from './duct-network-types';
 import {
   autoDetectNetworks, boundariesForNetwork, countNetworkParts, createContractBoundary, createNetwork, createSegment,
@@ -91,9 +91,9 @@ export function initDuctNetworkUi(context: DuctNetworkContext): DuctNetworkContr
       <details class="duct-titleblock" id="ductTitleBlock"><summary>Scanned project (title block)</summary><div id="ductTitleBlockFields" class="duct-tb-fields"></div></details>
       <p class="help">Highlight complete connected <b>Tulo-kanavisto</b> / <b>Poistokanavisto</b>, then click a network to see its measured lengths and parts.</p>
       <div class="button-row duct-primary"><button class="btn primary duct-hl-tulo" data-duct-action="highlight-tulo">Highlight Tulo</button><button class="btn primary duct-hl-poisto" data-duct-action="highlight-poisto">Highlight Poisto</button></div>
+      <div class="button-row"><button class="btn small" data-duct-action="highlight-both">Show both</button><button class="btn small" data-duct-action="fit-highlighted">Fit highlighted</button><button class="btn small ghost" data-duct-action="clear-highlight">Clear highlight</button></div>
       <div class="button-row"><button class="btn small" data-duct-action="rescan">Rescan drawing</button><button class="btn small" data-duct-action="review-uncertain">Review uncertain connections</button></div>
-      <div class="button-row"><button class="btn small" data-duct-action="fit-highlighted">Fit highlighted</button><button class="btn small ghost" data-duct-action="clear-highlight">Clear highlight</button></div>
-      <div class="toggle-grid"><label><input type="checkbox" data-duct-toggle="showOnly"> Show highlighted only</label><label><input type="checkbox" data-duct-toggle="dimOthers"> Dim other systems</label><label><input type="checkbox" data-duct-view="showUR" checked> Show UR boundaries</label><label><input type="checkbox" data-duct-view="showSuggested" checked> Show suggested geometry</label><label><input type="checkbox" data-duct-view="showLabels" checked> Show labels</label><label><input type="checkbox" data-duct-view="verifiedOnly"> Verified only</label></div>
+      <div class="toggle-grid"><label><input type="checkbox" data-duct-toggle="showOnly"> Show highlighted only</label><label><input type="checkbox" data-duct-toggle="dimOthers"> Dim background</label><label><input type="checkbox" data-duct-view="showUR" checked> Show UR boundaries</label><label><input type="checkbox" data-duct-view="showSuggested" checked> Show suggested geometry</label><label><input type="checkbox" data-duct-view="showLabels" checked> Show labels</label><label><input type="checkbox" data-duct-view="verifiedOnly"> Verified only</label></div>
       <div id="ductHighlightFeedback" class="selection-feedback" aria-live="polite">Highlight Tulo or Poisto to begin.</div>
       <div class="duct-legend" aria-label="Duct system legend"><span class="tulo">━ Tulo / Supply</span><span class="poisto">┅ Poisto / Extract</span><span class="verified">solid = Verified</span><span class="suggested">dashed = Suggested</span></div>
       <details class="duct-advanced"><summary>Correction tools (advanced)</summary>
@@ -229,11 +229,18 @@ export function initDuctNetworkUi(context: DuctNetworkContext): DuctNetworkContr
     context.toast('Centreline segment added to network');
   }
 
-  function setHighlight(scope: 'tulo' | 'poisto' | 'selected' | 'none', active: boolean): void {
+  function setHighlight(scope: 'tulo' | 'poisto' | 'both' | 'selected' | 'none', active: boolean): void {
     const highlight = project().ductHighlight;
     highlight.active = active; highlight.scope = active ? scope : 'none';
     highlight.selectedNetworkId = scope === 'selected' ? selectedNetworkId : highlight.selectedNetworkId;
-    if (scope === 'tulo' || scope === 'poisto') {
+    if (scope === 'both') {
+      const tulo = highlightSummary(project(), 'tulo', context.getPage());
+      const poisto = highlightSummary(project(), 'poisto', context.getPage());
+      const total = tulo.networks + poisto.networks;
+      highlightFeedback.textContent = total ? `${tulo.text} · ${poisto.text}` : 'No Tulo or Poisto networks detected on this page. Scan the drawing first.';
+      highlightFeedback.classList.toggle('empty', total === 0);
+      context.status(total ? `Showing both systems: ${tulo.networks} Tulo, ${poisto.networks} Poisto.` : 'No networks to show. Scan the drawing first.');
+    } else if (scope === 'tulo' || scope === 'poisto') {
       const summary = highlightSummary(project(), scope, context.getPage());
       let text = summary.text;
       if (!summary.networks) {
@@ -412,6 +419,7 @@ export function initDuctNetworkUi(context: DuctNetworkContext): DuctNetworkContr
     if (!highlight.active) return onPage;
     if (highlight.scope === 'tulo') return networksOfKind(project(), 'tulo').filter((network) => network.pageNumber === page);
     if (highlight.scope === 'poisto') return networksOfKind(project(), 'poisto').filter((network) => network.pageNumber === page);
+    if (highlight.scope === 'both') return [...networksOfKind(project(), 'tulo', page), ...networksOfKind(project(), 'poisto', page)];
     if (highlight.scope === 'selected') return onPage.filter((network) => network.id === (highlight.selectedNetworkId ?? selectedNetworkId));
     return onPage;
   }
@@ -587,6 +595,38 @@ export function initDuctNetworkUi(context: DuctNetworkContext): DuctNetworkContr
     }
   }
 
+  // Half the drawn duct-body width, in canvas units (PDF points at scale 1).
+  function bandHalfWidthCanvas(profile: DuctProfile | undefined, mmPerPt: number): number {
+    const fullMm = profile ? (profile.shape === 'round' ? profile.diameterMm : Math.max(profile.widthMm, profile.heightMm)) : 250;
+    return Math.max(5, Math.min(55, (fullMm / Math.max(0.0001, mmPerPt)) / 2));
+  }
+
+  // Fills a trapezoid between the two duct cross-sections meeting at a transition node
+  // so the highlight width visibly changes instead of stepping abruptly.
+  function drawTransitions(context2d: CanvasRenderingContext2D, renderScale: number, network: DuctNetwork, mmPerPt: number, excluded: Set<string>, color: string, dim: boolean): void {
+    const segments = networkSegments(project(), network).filter((segment) => !excluded.has(segment.id) && segment.centrelinePoints.length >= 2);
+    networkNodes(project(), network).filter((node) => node.type === 'transition').forEach((node) => {
+      const adjacent = segments.map((segment) => {
+        const start = segment.centrelinePoints[0]; const end = segment.centrelinePoints[segment.centrelinePoints.length - 1];
+        const dStart = Math.hypot(start.x - node.point.x, start.y - node.point.y); const dEnd = Math.hypot(end.x - node.point.x, end.y - node.point.y);
+        const near = dStart <= dEnd ? start : end; const inner = dStart <= dEnd ? segment.centrelinePoints[1] : segment.centrelinePoints[segment.centrelinePoints.length - 2];
+        return { segment, dist: Math.min(dStart, dEnd), near, inner };
+      }).filter((item) => item.dist <= 45 / renderScale).sort((a, b) => a.dist - b.dist).slice(0, 2);
+      if (adjacent.length < 2) return;
+      const corners: Array<{ x: number; y: number }> = [];
+      adjacent.forEach(({ segment, near, inner }) => {
+        const dx = near.x - inner.x; const dy = near.y - inner.y; const len = Math.hypot(dx, dy) || 1;
+        const px = -dy / len; const py = dx / len; const hw = bandHalfWidthCanvas(segment.profile, mmPerPt);
+        corners.push({ x: (near.x + px * hw) * renderScale, y: (near.y + py * hw) * renderScale });
+        corners.push({ x: (near.x - px * hw) * renderScale, y: (near.y - py * hw) * renderScale });
+      });
+      const cx = corners.reduce((sum, c) => sum + c.x, 0) / corners.length; const cy = corners.reduce((sum, c) => sum + c.y, 0) / corners.length;
+      corners.sort((a, b) => Math.atan2(a.y - cy, a.x - cx) - Math.atan2(b.y - cy, b.x - cx));
+      context2d.save(); context2d.globalAlpha = dim ? 0.12 : 0.42; context2d.fillStyle = color; context2d.beginPath();
+      corners.forEach((c, index) => index ? context2d.lineTo(c.x, c.y) : context2d.moveTo(c.x, c.y)); context2d.closePath(); context2d.fill(); context2d.restore();
+    });
+  }
+
   function drawNetwork(context2d: CanvasRenderingContext2D, renderScale: number, network: DuctNetwork, dim: boolean): void {
     const color = systemColor(network.systemType);
     const verified = network.verificationStatus === 'verified';
@@ -594,22 +634,29 @@ export function initDuctNetworkUi(context: DuctNetworkContext): DuctNetworkContr
     const alpha = dim ? 0.22 : 1;
     const extract = network.systemType === 'extract' || network.systemType === 'exhaust';
     const excluded = excludedSegmentIds(project(), network);
+    const mmPerPt = context.getMmPerPdfPoint();
+    // Full-body fill: each duct section is painted as a translucent band the width of
+    // the physical duct (round caps/joins overlap at bends and junctions so the whole
+    // network reads as one continuous, filled air path).
     networkSegments(project(), network).forEach((segment) => {
       if (!view.showSuggested && segment.verificationStatus === 'suggested' && !verified) return;
       const points = segment.centrelinePoints; if (points.length < 2) return;
       const outOfScope = excluded.has(segment.id);
-      const segSelected = segment.id === selectedSegmentId;
-      context2d.save(); context2d.globalAlpha = outOfScope ? alpha * 0.4 : alpha;
-      // Halo
-      context2d.beginPath(); points.forEach((point, index) => index ? context2d.lineTo(point.x * renderScale, point.y * renderScale) : context2d.moveTo(point.x * renderScale, point.y * renderScale));
-      context2d.strokeStyle = 'rgba(3,10,16,.75)'; context2d.lineWidth = (segSelected ? 12 : 9); context2d.lineJoin = 'round'; context2d.lineCap = 'round'; context2d.stroke();
-      // Main stroke: solid when verified, dashed when suggested; extract uses a distinct dash pattern.
-      context2d.beginPath(); points.forEach((point, index) => index ? context2d.lineTo(point.x * renderScale, point.y * renderScale) : context2d.moveTo(point.x * renderScale, point.y * renderScale));
-      context2d.strokeStyle = outOfScope ? '#8fa1b3' : segSelected ? '#ffe08a' : selected ? '#ffffff' : color; context2d.lineWidth = segSelected ? 6 : 4;
-      context2d.setLineDash(outOfScope ? [3, 4] : verified ? (extract ? [] : []) : extract ? [10, 6] : [6, 5]);
-      if (extract && verified && !outOfScope) context2d.setLineDash([14, 4, 3, 4]);
-      context2d.stroke(); context2d.restore();
+      const suggested = segment.verificationStatus === 'suggested' && !verified;
+      const bandPx = Math.max(6, bandHalfWidthCanvas(segment.profile, mmPerPt) * 2 * renderScale);
+      const path = (): void => { context2d.beginPath(); points.forEach((point, index) => index ? context2d.lineTo(point.x * renderScale, point.y * renderScale) : context2d.moveTo(point.x * renderScale, point.y * renderScale)); };
+      context2d.save(); context2d.lineJoin = 'round'; context2d.lineCap = 'round'; context2d.setLineDash([]);
+      // Outer outline / halo.
+      path(); context2d.lineWidth = bandPx + 4; context2d.globalAlpha = dim ? 0.1 : 0.5; context2d.strokeStyle = outOfScope ? 'rgba(150,160,175,.6)' : selected ? '#ffffff' : 'rgba(4,12,20,.85)'; context2d.stroke();
+      // Body fill.
+      path(); context2d.lineWidth = bandPx; context2d.globalAlpha = dim ? 0.12 : outOfScope ? 0.14 : selected ? 0.5 : verified ? 0.42 : 0.3; context2d.strokeStyle = color; context2d.stroke();
+      // Suggested / out-of-scope band gets a dashed edge cue; centreline carries the non-colour system cue.
+      path(); context2d.lineWidth = 1.6; context2d.globalAlpha = dim ? 0.3 : 0.92; context2d.strokeStyle = outOfScope ? '#9aa7b5' : selected ? '#fff2c0' : color;
+      context2d.setLineDash(outOfScope ? [3, 4] : suggested ? [7, 5] : extract ? [11, 6] : []);
+      context2d.stroke();
+      context2d.restore();
     });
+    drawTransitions(context2d, renderScale, network, mmPerPt, excluded, color, dim);
     networkNodes(project(), network).forEach((node) => drawNode(context2d, renderScale, node, color, alpha));
     // Network badge at first in-scope segment midpoint, or first node for scanned networks.
     const first = networkSegments(project(), network).find((segment) => !excluded.has(segment.id)) ?? networkSegments(project(), network)[0];
@@ -672,9 +719,21 @@ export function initDuctNetworkUi(context: DuctNetworkContext): DuctNetworkContr
     const boundary = project().contractBoundaries.filter((item) => item.pageNumber === page).find((item) => Math.hypot(item.point.x - point.x, item.point.y - point.y) <= 14 / renderScale);
     if (boundary) { selectedBoundaryId = boundary.id; selectedNetworkId = boundary.relatedNetworkId ?? selectedNetworkId; selectedSegmentId = null; selectedNodeId = null; context.markChanged(); return true; }
     const node = project().ductNodes.filter((item) => item.pageNumber === page).find((item) => Math.hypot(item.point.x - point.x, item.point.y - point.y) <= 12 / renderScale);
-    if (node) { selectedNodeId = node.id; selectedNetworkId = node.networkId ?? selectedNetworkId; selectedSegmentId = null; selectedBoundaryId = null; context.markChanged(); return true; }
-    const segment = project().ductSegments.filter((item) => item.pageNumber === page).find((item) => item.centrelinePoints.length >= 2 && distanceToPolyline(point, item.centrelinePoints) <= threshold);
-    if (segment) { selectedSegmentId = segment.id; selectedNetworkId = networkForSegment(project(), segment.id)?.id ?? selectedNetworkId; selectedNodeId = null; selectedBoundaryId = null; project().ductHighlight.selectedNetworkId = selectedNetworkId; context.markChanged(); return true; }
+    if (node) { selectedNodeId = node.id; selectedNetworkId = node.networkId ?? selectedNetworkId; selectedSegmentId = null; selectedBoundaryId = null; project().ductHighlight.selectedNetworkId = selectedNetworkId; context.markChanged(); return true; }
+    // Body hit-test: clicking anywhere inside the filled duct band selects the whole network.
+    const mmPerPt = context.getMmPerPdfPoint();
+    const segment = project().ductSegments.filter((item) => item.pageNumber === page).find((item) => {
+      if (item.centrelinePoints.length < 2) return false;
+      const half = bandHalfWidthCanvas(item.profile, mmPerPt);
+      return distanceToPolyline(point, item.centrelinePoints) <= Math.max(threshold, half);
+    });
+    if (segment) {
+      selectedNetworkId = networkForSegment(project(), segment.id)?.id ?? selectedNetworkId;
+      selectedSegmentId = null; selectedNodeId = null; selectedBoundaryId = null;
+      project().ductHighlight.selectedNetworkId = selectedNetworkId;
+      context.status('Network selected. Its parts list is shown; use Fit network to zoom.');
+      context.markChanged(); return true;
+    }
     return false;
   }
 
@@ -683,6 +742,7 @@ export function initDuctNetworkUi(context: DuctNetworkContext): DuctNetworkContr
     switch (action) {
       case 'highlight-tulo': setHighlight('tulo', true); break;
       case 'highlight-poisto': setHighlight('poisto', true); break;
+      case 'highlight-both': setHighlight('both', true); break;
       case 'highlight-selected': setHighlight('selected', true); break;
       case 'clear-highlight': case 'hide-highlight': setHighlight('none', false); break;
       case 'fit-highlighted': fitHighlighted(); break;

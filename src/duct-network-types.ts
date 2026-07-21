@@ -204,7 +204,7 @@ export type ReviewStatus = 'confirmed' | 'likely' | 'unresolved' | 'rejected';
 
 export interface DuctHighlightState {
   active: boolean;
-  scope: 'none' | 'tulo' | 'poisto' | 'selected' | 'all';
+  scope: 'none' | 'tulo' | 'poisto' | 'both' | 'selected' | 'all';
   showOnly: boolean;
   dimOthers: boolean;
   selectedNetworkId: string | null;

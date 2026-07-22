@@ -208,6 +208,8 @@ export interface CustomPart {
   favourite?: boolean;
   /** Family preset and swept-elbow parameters. Millimetres/degrees. */
   presetId?: string;
+  /** Real-world sample the part was started from (see part-samples.ts). */
+  sampleId?: string;
   bendRadiusMm?: number;
   bendAngleDeg?: number;
   inletExtensionMm?: number;

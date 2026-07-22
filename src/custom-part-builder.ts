@@ -8,6 +8,7 @@ import { PART_CATALOGUE, CATALOGUE_CATEGORIES, templateForPart, templateThumbnai
 import { DEMO_TEMPLATE_IDS, PROMOTIONAL_TEMPLATES, partForThumbnail, promotionalTemplateById, promotionalTemplateForPart, promotionalThumbnail, type PromotionalTemplateDefinition, type PromotionalTemplateId } from './promotional-templates';
 import { anchorOffset, checkEdit, derivedLengthMm, ensureLocks, isOverConstrained, lockLevel, lockStateFor, plenumLockWarnings, quickAction, withLockState, type LockTarget } from './part-locks';
 import { emptyLockState } from './types';
+import { PART_SAMPLES, expandQuery, sampleById, samplesForTemplate, type PartSample } from './part-samples';
 import { buildPlenumGeometry, nextPortId, portSizeLabel } from './plenum-geometry';
 import { renderPlenumViews } from './plenum-views';
 import { buildElbowGeometry } from './elbow-geometry';
@@ -54,7 +55,7 @@ function htmlEscape(value: string): string { return value.replace(/[&<>'"]/g, (c
 export function initCustomPartBuilder(root: HTMLElement, options: BuilderOptions): BuilderController {
   root.innerHTML = `<section id="builderLibrary" class="tpl-library">
     <div class="tpl-lib-head">
-      <div><span class="eyebrow">Custom Part Library</span><h2>Eight distinct HVAC fitting families</h2><p class="help">Every Ready card has its own recognisable geometry topology. Variants live inside the family as presets.</p></div>
+      <div><span class="eyebrow">Custom Part Library</span><h2>Choose the fitting you need</h2><p class="help">Pick the closest real example, then change only the measurements that differ. Variants live inside each family as presets.</p></div>
       <div class="tpl-lib-actions"><button id="builderDemoMode" class="btn">Demo mode</button><button id="builderFutureCatalogue" class="btn">View future catalogue</button><label class="field tpl-search"><span class="label">Search</span><input id="tplSearch" class="input" placeholder="Name, profile, connection or tag"></label></div>
     </div>
     <div id="tplFilters" class="tpl-filters"></div>
@@ -64,6 +65,8 @@ export function initCustomPartBuilder(root: HTMLElement, options: BuilderOptions
     <aside class="builder-controls">
       <div class="builder-heading"><div><span class="eyebrow" id="builderTemplateName">Parametric fitting</span><h2 id="builderTitle">Transition</h2></div><div class="button-row"><button id="builderBackToLibrary" class="btn small">← Library</button><button id="builderNextDemo" class="btn small hidden">Next demo</button></div></div>
       <div class="button-row"><button id="builderResetTemplate" class="btn small">Reset template</button><button id="builderRandomExample" class="btn small">Random safe example</button><button id="builderLoadRectExample" class="btn small">Rect example</button><button id="builderLoadExample" class="btn small">R→Ø example</button></div>
+      <div class="button-row mode-row"><button id="builderQuickMode" class="btn small primary">Quick mode</button><button id="builderAdvancedMode" class="btn small">Advanced</button></div>
+      <div id="startingPointPanel" class="starting-point-panel"></div>
       <div id="heroPresetPanel" class="hero-preset-panel"></div>
       <div id="lockConflict" class="callout lock-conflict hidden" role="alert"></div>
       <details class="lock-panel" id="lockPanel" open><summary>Locks <span id="lockSummary" class="badge">unlocked</span></summary><div id="lockBody"></div></details>
@@ -234,7 +237,15 @@ export function initCustomPartBuilder(root: HTMLElement, options: BuilderOptions
   const FILTERS = ['All', 'Rectangular', 'Round', 'Mixed profile', 'Transitions', 'Bends', 'Branches', 'Plenums', 'My templates', 'Favourites'];
   function templateMatches(t: PromotionalTemplateDefinition): boolean {
     const q = librarySearch.trim().toLowerCase();
-    if (q && !(`${t.name} ${t.description} ${t.category} ${t.profilePath} ${t.tags.join(' ')}`.toLowerCase().includes(q))) return false;
+    if (q) {
+      const samples = samplesForTemplate(t.id);
+      // Aliases match structured fields only. Matching free-text descriptions too
+      // would make "satula" hit any part whose description mentions a branch run.
+      const structured = `${t.name} ${t.category} ${t.profilePath} ${t.tags.join(' ')} ${samples.map((s) => `${s.name} ${s.tags.join(' ')}`).join(' ')}`.toLowerCase();
+      const prose = `${t.description} ${samples.map((s) => s.use).join(' ')}`.toLowerCase();
+      const matched = expandQuery(q).some((term) => structured.includes(term)) || prose.includes(q);
+      if (!matched) return false;
+    }
     switch (libraryFilter) {
       case 'Bends': return t.group === 'Bends';
       case 'Rectangular': return t.category === 'Rectangular';
@@ -299,6 +310,26 @@ export function initCustomPartBuilder(root: HTMLElement, options: BuilderOptions
   }
 
   // --- Locks ----------------------------------------------------------------
+  // Quick mode hides CAD-oriented controls; Advanced restores ports and locks.
+  let quickMode = true;
+  const RECENT_KEY = 'hvac-builder-recent-samples';
+  function recentSampleIds(): string[] {
+    try { const raw = localStorage.getItem(RECENT_KEY); return raw ? (JSON.parse(raw) as string[]) : []; } catch { return []; }
+  }
+  function rememberRecent(sampleId: string): void {
+    try {
+      const next = [sampleId, ...recentSampleIds().filter((id) => id !== sampleId)].slice(0, 6);
+      localStorage.setItem(RECENT_KEY, JSON.stringify(next));
+    } catch { /* storage unavailable — recents are a convenience only */ }
+  }
+  function applyMode(): void {
+    get('builderQuickMode').classList.toggle('primary', quickMode);
+    get('builderAdvancedMode').classList.toggle('primary', !quickMode);
+    // CAD-oriented panels are Advanced-only.
+    get('lockPanel').classList.toggle('hidden', quickMode);
+    root.classList.toggle('quick-mode', quickMode);
+  }
+
   let lockTarget: LockTarget = 'portA';
   let lastValidDraft: CustomPart | null = null;
 
@@ -491,6 +522,39 @@ export function initCustomPartBuilder(root: HTMLElement, options: BuilderOptions
     }
     closeEditor(); writeDraft(); render(); if (editingExisting) options.onChange?.(structuredClone(draft)); options.notify(`${'key' in target ? 'Dimension' : 'Body length'} updated`);
   }
+  // --- Starting point: real-world examples for the open family --------------
+  function loadSample(sampleId: string): void {
+    const sample = sampleById(sampleId); if (!sample) return;
+    const id = draft.id; const createdAt = draft.createdAt;
+    draft = partFromTemplate(sample.templateId);
+    draft = syncCustomPartAssembly({ ...draft, ...structuredClone(sample.defaults), id, createdAt, updatedAt: timestamp(), templateId: sample.templateId, sampleId: sample.id });
+    editingExisting = false; selectedPortId = null; lastValidDraft = null;
+    rememberRecent(sample.id);
+    writeDraft(); render(); fitCamera();
+    options.notify(`${sample.name} loaded — change the highlighted measurements to match your part`);
+  }
+
+  function renderStartingPoint(): void {
+    const panel = get('startingPointPanel');
+    const template = promotionalTemplateForPart(draft);
+    if (!template) { panel.innerHTML = ''; panel.classList.add('hidden'); return; }
+    const samples = samplesForTemplate(template.id);
+    if (!samples.length) { panel.innerHTML = ''; panel.classList.add('hidden'); return; }
+    const recommended = samples.find((s) => s.recommended) ?? samples[0];
+    const others = samples.filter((s) => s.id !== recommended.id);
+    const active = draft.sampleId;
+    panel.classList.remove('hidden');
+    panel.innerHTML = `<div class="preset-heading"><span class="label">Choose a starting point</span><span class="help">${active ? 'Change the measurements below to match your part.' : 'Load the closest real example, then adjust.'}</span></div>
+      <div class="sample-list">
+        <button class="sample-card recommended ${active === recommended.id ? 'active' : ''}" data-load-sample="${recommended.id}">
+          <span class="sample-badge">Recommended</span><b>${htmlEscape(recommended.name)}</b>
+          <small>${htmlEscape(recommended.use)}</small><small class="sample-dims">${htmlEscape(recommended.summary)}</small>
+        </button>
+        ${others.map((s) => `<button class="sample-card ${active === s.id ? 'active' : ''}" data-load-sample="${s.id}"><b>${htmlEscape(s.name)}</b><small>${htmlEscape(s.use)}</small><small class="sample-dims">${htmlEscape(s.summary)}</small></button>`).join('')}
+        <button class="sample-card plain" data-start-defaults="${template.id}"><b>Start from defaults</b><small>Empty family defaults instead of a real example.</small></button>
+      </div>`;
+  }
+
   function renderPresetPanel(): void {
     const panel = get('heroPresetPanel'); const template = promotionalTemplateForPart(draft);
     if (!template) { panel.innerHTML = ''; panel.classList.add('hidden'); return; }
@@ -508,6 +572,7 @@ export function initCustomPartBuilder(root: HTMLElement, options: BuilderOptions
     lastValidDraft = structuredClone(draft);
     renderLockPanel();
     const template = promotionalTemplateForPart(draft) ?? templateForPart(draft);
+    renderStartingPoint();
     renderPresetPanel();
     get('builderTemplateName').textContent = template ? template.name : 'Parametric fitting';
     const isPlenum = draft.partType === 'plenum-box'; const isElbow = draft.partType === 'rectangular-elbow' || draft.partType === 'round-elbow';
@@ -795,6 +860,20 @@ export function initCustomPartBuilder(root: HTMLElement, options: BuilderOptions
   };
   get('plenumPanel').addEventListener('input', applyPlenumInput);
   get('plenumPanel').addEventListener('change', applyPlenumInput);
+  get('builderQuickMode').addEventListener('click', () => { quickMode = true; applyMode(); options.notify('Quick mode: installer measurements only'); });
+  get('builderAdvancedMode').addEventListener('click', () => { quickMode = false; applyMode(); options.notify('Advanced mode: ports, locks and constraints available'); });
+  get('startingPointPanel').addEventListener('click', (event) => {
+    const target = event.target as HTMLElement;
+    const sample = target.closest<HTMLElement>('[data-load-sample]')?.dataset.loadSample;
+    if (sample) { loadSample(sample); return; }
+    const defaults = target.closest<HTMLElement>('[data-start-defaults]')?.dataset.startDefaults;
+    if (defaults) {
+      const id = draft.id; const createdAt = draft.createdAt;
+      draft = partFromTemplate(defaults as PromotionalTemplateId); draft.id = id; draft.createdAt = createdAt;
+      editingExisting = false; lastValidDraft = null; writeDraft(); render(); fitCamera();
+      options.notify('Started from family defaults');
+    }
+  });
   get('builderSaveTemplate').addEventListener('click', () => {
     readDraft(); openTemplateForm('create');
   });
@@ -814,6 +893,7 @@ export function initCustomPartBuilder(root: HTMLElement, options: BuilderOptions
   get('builderPdf').addEventListener('click', () => { readDraft(); const errors = validateCustomPart(draft); if (Object.keys(errors).length) { render(); options.notify('Correct the highlighted measurements before exporting'); return; } draft = syncCustomPartAssembly(draft); downloadCustomPartPdf(draft); options.notify('Two-page custom fitting PDF created'); });
   get('builderSave').addEventListener('click', () => { readDraft(); const errors = validateCustomPart(draft); if (Object.keys(errors).length) { render(); options.notify('Correct the highlighted measurements before saving'); return; } draft = syncCustomPartAssembly(draft); options.onSave(structuredClone(draft)); });
 
+  applyMode();
   writeDraft(); render(); fitCamera(); showLibrary();
   return {
     load(part, existing = Boolean(part)) {

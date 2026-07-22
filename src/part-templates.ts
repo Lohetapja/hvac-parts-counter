@@ -30,6 +30,26 @@ export interface TemplateParameterDefinition {
 }
 
 export type TemplateStatus = 'available' | 'coming-later';
+/** Catalogue implementation status. Only ready/beta may be opened. */
+export type CatalogueStatus = 'ready' | 'beta' | 'planned' | 'assembly-only';
+
+export interface CatalogueEntry {
+  id: string;
+  name: string;
+  nameFi?: string;
+  description: string;
+  category: string;
+  subcategory: string;
+  tags: string[];
+  inletProfiles: string[];
+  outletProfiles: string[];
+  portCount: string;
+  status: CatalogueStatus;
+  parameterSummary: string;
+  /** Set only when a real geometry generator backs this entry. */
+  geometryGeneratorId?: PartTemplateId;
+  thumbnailId: PartTemplateId;
+}
 
 export interface PartTemplateDefinition {
   id: PartTemplateId;
@@ -134,6 +154,139 @@ export const PART_TEMPLATES: PartTemplateDefinition[] = [
     status: 'coming-later', parameterDefinitions: [], parameterSummary: 'Level 3 — multi-section profile loft',
   },
 ];
+
+// --- Full HVAC fitting catalogue -------------------------------------------
+// Entries with a geometryGeneratorId are backed by a real generator (ready/beta).
+// Everything else is a structured "planned" entry — no fake geometry is produced.
+function entry(
+  id: string, name: string, nameFi: string, category: string, subcategory: string,
+  inlet: string[], outlet: string[], portCount: string, status: CatalogueStatus,
+  parameterSummary: string, thumbnailId: PartTemplateId, generator?: PartTemplateId, tags: string[] = [],
+): CatalogueEntry {
+  return { id, name, nameFi, description: `${name} (${nameFi})`, category, subcategory, tags: [category.toLowerCase(), subcategory.toLowerCase(), ...tags], inletProfiles: inlet, outletProfiles: outlet, portCount, status, parameterSummary, geometryGeneratorId: generator, thumbnailId };
+}
+const R = ['rectangular']; const O = ['round']; const FO = ['flat-oval']; const ANY = ['rectangular', 'round'];
+
+export const PART_CATALOGUE: CatalogueEntry[] = [
+  // BASIC BODIES
+  entry('rect-straight', 'Rectangular straight', 'Suorakaidekanava', 'Basic bodies', 'Straight', R, R, '2', 'beta', 'W×H, length', 'rectangular-transition', 'rectangular-transition'),
+  entry('round-straight', 'Round straight', 'Kierresaumakanava', 'Basic bodies', 'Straight', O, O, '2', 'planned', 'Ø, length', 'rectangular-to-round'),
+  entry('flat-oval-straight', 'Flat-oval straight', 'Litteä ovaali', 'Basic bodies', 'Straight', FO, FO, '2', 'planned', 'W×H, length', 'rectangular-transition'),
+  entry('plenum', 'Plenum', 'Jakolaatikko', 'Basic bodies', 'Boxes', ANY, ANY, '1 + N', 'ready', 'Body W×H×D, inlet, N outlets', 'plenum-box', 'plenum-box'),
+  entry('tapered-plenum', 'Tapered plenum', 'Kartiolaatikko', 'Basic bodies', 'Boxes', ANY, ANY, '1 + N', 'planned', 'Tapered body, N outlets', 'plenum-box'),
+  entry('equipment-box', 'Equipment box', 'Laitekotelo', 'Basic bodies', 'Boxes', ANY, ANY, '1 + N', 'planned', 'Body, equipment ports', 'plenum-box'),
+  entry('grille-box', 'Grille box', 'Säleikkölaatikko', 'Basic bodies', 'Boxes', ANY, ANY, '1 + 1', 'planned', 'Body, grille face', 'plenum-box'),
+  entry('multi-outlet-manifold', 'Multi-outlet manifold', 'Jakotukki', 'Basic bodies', 'Boxes', ANY, ANY, '1 + N', 'planned', 'Manifold body, N outlets', 'plenum-box'),
+  // TRANSITIONS
+  entry('rect-centred-transition', 'Rectangular centred transition', 'Keskitetty muunto', 'Transitions', 'Rectangular', R, R, '2', 'ready', 'W×H both ends, length', 'rectangular-transition', 'rectangular-transition'),
+  entry('rect-one-side-flat', 'Rectangular one-side-flat transition', 'Toispuoleinen muunto', 'Transitions', 'Rectangular', R, R, '2', 'ready', 'W×H, single-side offset', 'rectangular-transition', 'rectangular-transition'),
+  entry('rect-double-offset', 'Rectangular double-offset transition', 'Kaksoissiirtymä', 'Transitions', 'Rectangular', R, R, '2', 'ready', 'W×H, X and Y offsets', 'rectangular-transition', 'rectangular-transition'),
+  entry('rect-to-round', 'Rectangular to round', 'Suorakaide–pyöreä muunto', 'Transitions', 'Mixed', R, O, '2', 'ready', 'W×H, Ø, length, offsets, angles', 'rectangular-to-round', 'rectangular-to-round'),
+  entry('round-to-rect', 'Round to rectangular', 'Pyöreä–suorakaide muunto', 'Transitions', 'Mixed', O, R, '2', 'ready', 'Ø, W×H, length, offsets, angles', 'round-to-rectangular', 'round-to-rectangular'),
+  entry('round-concentric-reducer', 'Round concentric reducer', 'Keskeinen supistus', 'Transitions', 'Round', O, O, '2', 'beta', 'Ø1, Ø2, length', 'rectangular-to-round', 'rectangular-to-round'),
+  entry('round-eccentric-reducer', 'Round eccentric reducer', 'Epäkeskeinen supistus', 'Transitions', 'Round', O, O, '2', 'beta', 'Ø1, Ø2, length, offset', 'rectangular-to-round', 'rectangular-to-round'),
+  entry('rect-to-flat-oval', 'Rectangular to flat-oval', 'Suorakaide–ovaali', 'Transitions', 'Mixed', R, FO, '2', 'planned', 'W×H, oval size, length', 'rectangular-transition'),
+  entry('flat-oval-to-round', 'Flat-oval to round', 'Ovaali–pyöreä', 'Transitions', 'Mixed', FO, O, '2', 'planned', 'Oval size, Ø, length', 'rectangular-to-round'),
+  entry('twisted-transition', 'Twisted transition', 'Kierretty muunto', 'Transitions', 'Special', R, R, '2', 'planned', 'W×H, twist angle', 'rectangular-transition'),
+  entry('multi-stage-transition', 'Multi-stage transition', 'Monivaiheinen muunto', 'Transitions', 'Special', ANY, ANY, '2+', 'planned', 'Several profile stages', 'profile-loft'),
+  // BENDS AND OFFSETS
+  entry('rect-radius-elbow', 'Rectangular radius elbow', 'Suorakaidekaari', 'Bends and offsets', 'Elbows', R, R, '2', 'beta', 'W×H, angle, radius', 'rectangular-transition', 'rectangular-transition'),
+  entry('rect-mitred-elbow', 'Rectangular mitred elbow', 'Jiirikulma', 'Bends and offsets', 'Elbows', R, R, '2', 'beta', 'W×H, angle', 'rectangular-transition', 'rectangular-transition'),
+  entry('round-pressed-elbow', 'Round pressed elbow', 'Puristettu kulma', 'Bends and offsets', 'Elbows', O, O, '2', 'beta', 'Ø, angle', 'rectangular-to-round', 'rectangular-to-round'),
+  entry('round-segmented-elbow', 'Round segmented elbow', 'Lohkokulma', 'Bends and offsets', 'Elbows', O, O, '2', 'planned', 'Ø, angle, segments', 'rectangular-to-round'),
+  entry('reducing-elbow', 'Reducing elbow', 'Supistava kulma', 'Bends and offsets', 'Elbows', ANY, ANY, '2', 'planned', 'Two sizes, angle', 'rectangular-to-round'),
+  entry('s-bend', 'S-bend', 'S-mutka', 'Bends and offsets', 'Offsets', ANY, ANY, '2', 'planned', 'Offset, length', 'rectangular-transition'),
+  entry('z-offset', 'Z-offset', 'Z-siirtymä', 'Bends and offsets', 'Offsets', R, R, '2', 'ready', 'X/Y offsets, length', 'rectangular-transition', 'rectangular-transition'),
+  entry('radius-offset', 'Radius offset', 'Kaarisiirtymä', 'Bends and offsets', 'Offsets', ANY, ANY, '2', 'planned', 'Offset, radius', 'rectangular-transition'),
+  entry('three-d-offset', 'Three-dimensional offset', 'Kolmiulotteinen siirtymä', 'Bends and offsets', 'Offsets', R, R, '2', 'ready', 'X and Y offsets, angles', 'rectangular-transition', 'rectangular-transition'),
+  entry('drop-cheek-bend', 'Drop-cheek bend', 'Poskikulma', 'Bends and offsets', 'Elbows', R, R, '2', 'planned', 'W×H, angle, cheek drop', 'rectangular-transition'),
+  // BRANCHES
+  entry('equal-tee', 'Equal tee', 'Tasahaara', 'Branches', 'Tees', ANY, ANY, '3', 'planned', 'Main Ø/W×H, branch size', 'plenum-box'),
+  entry('reducing-tee', 'Reducing tee', 'Supistava haara', 'Branches', 'Tees', ANY, ANY, '3', 'planned', 'Main, branch sizes', 'plenum-box'),
+  entry('y-piece', 'Y-piece', 'Y-haara', 'Branches', 'Y', ANY, ANY, '3', 'planned', 'Sizes, split angle', 'plenum-box'),
+  entry('lateral-branch', 'Lateral branch', 'Vinohaara', 'Branches', 'Lateral', ANY, ANY, '3', 'planned', 'Sizes, branch angle', 'plenum-box'),
+  entry('trousers-splitter', 'Trousers / splitter', 'Housuhaara', 'Branches', 'Splitters', ANY, ANY, '3', 'planned', 'Two outlets, split angle', 'plenum-box'),
+  entry('x-piece', 'X-piece', 'Ristihaara', 'Branches', 'Crosses', ANY, ANY, '4', 'planned', 'Main, two branches', 'plenum-box'),
+  entry('straight-with-branch', 'Straight with branch', 'Suora haaralla', 'Branches', 'Taps', ANY, ANY, '3', 'planned', 'Main length, branch position', 'plenum-box'),
+  entry('bend-with-branch', 'Bend with branch', 'Kulma haaralla', 'Branches', 'Taps', ANY, ANY, '3', 'planned', 'Angle, branch position', 'plenum-box'),
+  entry('angled-round-branch', 'Angled round branch', 'Vino pyöreä haara', 'Branches', 'Taps', O, O, '2', 'ready', 'Ø, branch angle, offsets', 'rectangular-to-round', 'rectangular-to-round'),
+  entry('angled-rect-branch', 'Angled rectangular branch', 'Vino suorakaidehaara', 'Branches', 'Taps', R, R, '2', 'ready', 'W×H, branch angle, offsets', 'rectangular-transition', 'rectangular-transition'),
+  entry('side-branch', 'Side branch', 'Sivuhaara', 'Branches', 'Taps', ANY, ANY, '1 + N', 'ready', 'Host face, position, size', 'plenum-box', 'plenum-box'),
+  entry('top-branch', 'Top branch', 'Ylähaara', 'Branches', 'Taps', ANY, ANY, '1 + N', 'ready', 'Host face, position, size', 'plenum-box', 'plenum-box'),
+  entry('bottom-branch', 'Bottom branch', 'Alahaara', 'Branches', 'Taps', ANY, ANY, '1 + N', 'ready', 'Host face, position, size', 'plenum-box', 'plenum-box'),
+  entry('corner-branch', 'Corner branch', 'Kulmahaara', 'Branches', 'Taps', ANY, ANY, '1 + N', 'planned', 'Corner position, size', 'plenum-box'),
+  entry('multi-branch-manifold', 'Multi-branch manifold', 'Monihaarainen jakotukki', 'Branches', 'Manifolds', ANY, ANY, '1 + N', 'ready', 'Body, N branch ports', 'plenum-box', 'plenum-box'),
+  // SADDLES AND TAKEOFFS
+  entry('round-saddle', 'Round saddle', 'Satulahaara', 'Saddles and takeoffs', 'Saddles', O, O, '1 + N', 'ready', 'Host face, Ø, position', 'plenum-box', 'plenum-box'),
+  entry('rect-saddle', 'Rectangular saddle', 'Suorakaidesatula', 'Saddles and takeoffs', 'Saddles', R, R, '1 + N', 'ready', 'Host face, W×H, position', 'plenum-box', 'plenum-box'),
+  entry('collar-saddle', 'Collar saddle', 'Kaulussatula', 'Saddles and takeoffs', 'Saddles', O, O, '1 + N', 'beta', 'Ø, collar length', 'plenum-box', 'plenum-box'),
+  entry('shoe-tap', 'Shoe tap', 'Kenkähaara', 'Saddles and takeoffs', 'Takeoffs', ANY, ANY, '1 + N', 'planned', 'Shoe profile, position', 'plenum-box'),
+  entry('conical-takeoff', 'Conical takeoff', 'Kartiohaara', 'Saddles and takeoffs', 'Takeoffs', O, O, '1 + N', 'planned', 'Ø, cone length', 'plenum-box'),
+  entry('angled-takeoff', 'Angled takeoff', 'Vinohaara', 'Saddles and takeoffs', 'Takeoffs', ANY, ANY, '1 + N', 'beta', 'Angle, position, size', 'plenum-box', 'plenum-box'),
+  entry('corner-takeoff', 'Corner takeoff', 'Kulmahaara', 'Saddles and takeoffs', 'Takeoffs', ANY, ANY, '1 + N', 'planned', 'Corner, size', 'plenum-box'),
+  entry('edge-takeoff', 'Edge takeoff', 'Reunahaara', 'Saddles and takeoffs', 'Takeoffs', ANY, ANY, '1 + N', 'planned', 'Edge, size', 'plenum-box'),
+  // CONNECTIONS AND ENDS
+  entry('male-connector', 'Male connector', 'Urosliitin', 'Connections and ends', 'Connectors', ANY, ANY, '2', 'beta', 'Size, connector length', 'rectangular-transition', 'rectangular-transition'),
+  entry('female-connector', 'Female connector', 'Naarasliitin', 'Connections and ends', 'Connectors', ANY, ANY, '2', 'beta', 'Size, connector length', 'rectangular-transition', 'rectangular-transition'),
+  entry('inner-coupling', 'Inner coupling', 'Sisäliitin', 'Connections and ends', 'Connectors', O, O, '2', 'beta', 'Ø, length', 'rectangular-to-round', 'rectangular-to-round'),
+  entry('outer-coupling', 'Outer coupling', 'Ulkoliitin', 'Connections and ends', 'Connectors', O, O, '2', 'beta', 'Ø, length', 'rectangular-to-round', 'rectangular-to-round'),
+  entry('flange', 'Flange', 'Laippa', 'Connections and ends', 'Flanges', ANY, ANY, '1', 'planned', 'Size, flange type', 'rectangular-transition'),
+  entry('collar', 'Collar', 'Kaulus', 'Connections and ends', 'Connectors', O, O, '1', 'planned', 'Ø, collar length', 'rectangular-to-round'),
+  entry('spigot', 'Spigot', 'Yhde', 'Connections and ends', 'Connectors', O, O, '1', 'planned', 'Ø, projection', 'rectangular-to-round'),
+  entry('end-cap', 'End cap', 'Päätytulppa', 'Connections and ends', 'Ends', ANY, ANY, '1', 'ready', 'Size (zero-length body)', 'rectangular-transition', 'rectangular-transition'),
+  entry('end-cover', 'End cover', 'Päätykansi', 'Connections and ends', 'Ends', ANY, ANY, '1', 'beta', 'Size, cover depth', 'rectangular-transition', 'rectangular-transition'),
+  entry('flexible-connector', 'Flexible connector', 'Joustoliitin', 'Connections and ends', 'Connectors', ANY, ANY, '2', 'planned', 'Size, free length', 'rectangular-transition'),
+  entry('equipment-flange', 'Equipment flange', 'Laitelaippa', 'Connections and ends', 'Flanges', ANY, ANY, '1', 'planned', 'Size, bolt pattern', 'plenum-box'),
+  entry('telescopic-section', 'Telescopic section', 'Teleskooppiosa', 'Connections and ends', 'Connectors', ANY, ANY, '2', 'planned', 'Size, min/max length', 'rectangular-transition'),
+  // EQUIPMENT AND SERVICE PARTS
+  entry('damper-housing', 'Damper housing', 'Peltikotelo', 'Equipment and service', 'Dampers', ANY, ANY, '2', 'beta', 'Size, housing length', 'rectangular-transition', 'rectangular-transition'),
+  entry('fire-damper-sleeve', 'Fire-damper sleeve', 'Palopeltiholkki', 'Equipment and service', 'Dampers', ANY, ANY, '2', 'planned', 'Size, sleeve length, fire class', 'rectangular-transition'),
+  entry('iris-pra-housing', 'IRIS / PRA housing', 'IRIS/PRA-kotelo', 'Equipment and service', 'Dampers', O, O, '2', 'planned', 'Ø, housing length', 'rectangular-to-round'),
+  entry('filter-box', 'Filter box', 'Suodatinkotelo', 'Equipment and service', 'Boxes', ANY, ANY, '2', 'beta', 'Body, filter size', 'plenum-box', 'plenum-box'),
+  entry('heater-box', 'Heater box', 'Lämmityspatterikotelo', 'Equipment and service', 'Boxes', ANY, ANY, '2', 'planned', 'Body, coil size', 'plenum-box'),
+  entry('coil-casing', 'Coil casing', 'Patterikotelo', 'Equipment and service', 'Boxes', ANY, ANY, '2', 'planned', 'Body, coil size', 'plenum-box'),
+  entry('fan-adapter', 'Fan adapter', 'Puhallinsovite', 'Equipment and service', 'Adapters', ANY, ANY, '2', 'beta', 'Duct size, fan flange', 'rectangular-to-round', 'rectangular-to-round'),
+  entry('ahu-adapter', 'AHU adapter', 'IV-koneen sovite', 'Equipment and service', 'Adapters', ANY, ANY, '2', 'beta', 'Duct size, unit flange', 'rectangular-transition', 'rectangular-transition'),
+  entry('silencer-casing', 'Silencer casing', 'Äänenvaimenninkotelo', 'Equipment and service', 'Silencers', ANY, ANY, '2', 'planned', 'Size, length', 'rectangular-transition'),
+  entry('splitter-silencer', 'Splitter silencer', 'Levyvaimennin', 'Equipment and service', 'Silencers', R, R, '2', 'planned', 'Size, splitter count', 'plenum-box'),
+  entry('cleaning-hatch-section', 'Cleaning hatch section', 'Puhdistusluukkuosa', 'Equipment and service', 'Access', ANY, ANY, '2 + 1', 'ready', 'Size, hatch position', 'plenum-box', 'plenum-box'),
+  entry('access-door-section', 'Access-door section', 'Huoltoluukkuosa', 'Equipment and service', 'Access', ANY, ANY, '2 + 1', 'beta', 'Size, door position', 'plenum-box', 'plenum-box'),
+  entry('measurement-station', 'Measurement station', 'Mittausosa', 'Equipment and service', 'Measurement', ANY, ANY, '2 + N', 'planned', 'Size, tapping positions', 'rectangular-transition'),
+  entry('terminal-box', 'Terminal box', 'Päätelaatikko', 'Equipment and service', 'Boxes', ANY, ANY, '1 + N', 'ready', 'Body, inlet, N outlets', 'plenum-box', 'plenum-box'),
+  // SPECIAL PARTS
+  entry('extraction-hood', 'Extraction hood', 'Huuva', 'Special parts', 'Hoods', ANY, ANY, '1 + N', 'planned', 'Hood size, collar', 'plenum-box'),
+  entry('exhaust-hood', 'Exhaust hood', 'Poistohuuva', 'Special parts', 'Hoods', ANY, ANY, '1 + N', 'planned', 'Hood size, collar', 'plenum-box'),
+  entry('rain-hood', 'Rain hood', 'Sadehattu', 'Special parts', 'Hoods', ANY, ANY, '1', 'planned', 'Size, overhang', 'plenum-box'),
+  entry('machine-adapter', 'Machine adapter', 'Konesovite', 'Special parts', 'Adapters', ANY, ANY, '2', 'beta', 'Duct size, machine flange', 'rectangular-transition', 'rectangular-transition'),
+  entry('kitchen-hood-transition', 'Kitchen hood transition', 'Keittiöhuuvan muunto', 'Special parts', 'Adapters', R, ANY, '2', 'beta', 'Hood size, duct size', 'rectangular-to-round', 'rectangular-to-round'),
+  entry('waste-extraction-branch', 'Waste extraction branch', 'Jätteenpoistohaara', 'Special parts', 'Branches', O, O, '1 + N', 'planned', 'Ø, branch positions', 'plenum-box'),
+  entry('nozzle-manifold', 'Nozzle manifold', 'Suutinjakotukki', 'Special parts', 'Manifolds', ANY, O, '1 + N', 'planned', 'Body, nozzle count', 'plenum-box'),
+  entry('custom-multi-port-box', 'Custom multi-port box', 'Mukautettu monipistelaatikko', 'Special parts', 'Boxes', ANY, ANY, '1 + N', 'ready', 'Body, arbitrary ports', 'plenum-box', 'plenum-box'),
+  // ASSEMBLY-ONLY
+  entry('custom-assembly-entry', 'Custom assembly', 'Mukautettu kokoonpano', 'Assemblies', 'Multi-segment', ANY, ANY, 'N', 'assembly-only', 'Level 2 — segment graph', 'custom-assembly'),
+  entry('profile-loft-entry', 'Build from profiles', 'Profiililoftaus', 'Assemblies', 'Loft', ANY, ANY, 'N', 'assembly-only', 'Level 3 — multi-section loft', 'profile-loft'),
+];
+
+export const CATALOGUE_CATEGORIES = [...new Set(PART_CATALOGUE.map((e) => e.category))];
+
+/** Addable elements. Only stable ones expose geometry; the rest stay structured. */
+export const ADDABLE_ELEMENTS = {
+  ports: [
+    { id: 'port-round', name: 'Round port', status: 'ready' as CatalogueStatus },
+    { id: 'port-rectangular', name: 'Rectangular port', status: 'ready' as CatalogueStatus },
+    { id: 'port-flat-oval', name: 'Flat-oval port', status: 'planned' as CatalogueStatus },
+    { id: 'port-custom', name: 'Custom profile port', status: 'planned' as CatalogueStatus },
+  ],
+  attachments: ['saddle', 'branch', 'collar', 'flange', 'spigot', 'access panel', 'cleaning hatch', 'sensor port', 'measurement port', 'drain connection']
+    .map((name) => ({ id: `attach-${name.replace(/\s+/g, '-')}`, name, status: (name === 'saddle' || name === 'branch' ? 'beta' : 'planned') as CatalogueStatus })),
+  internals: ['splitter', 'baffle', 'turning vane', 'damper blade', 'perforated plate', 'filter rack', 'silencer splitter', 'internal divider']
+    .map((name) => ({ id: `internal-${name.replace(/\s+/g, '-')}`, name, status: 'planned' as CatalogueStatus })),
+  detailMetadata: ['material', 'thickness', 'insulation', 'connector type', 'flange type', 'seam position', 'reinforcement', 'notes'],
+};
+
+export function catalogueOpenable(entry: CatalogueEntry): boolean {
+  return (entry.status === 'ready' || entry.status === 'beta') && Boolean(entry.geometryGeneratorId);
+}
 
 export function templateById(id: string): PartTemplateDefinition | undefined {
   return PART_TEMPLATES.find((template) => template.id === id);

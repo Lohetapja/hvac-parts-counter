@@ -9,6 +9,7 @@ export function outletDirection(horizontalDeg: number, verticalDeg: number): Vec
 }
 
 export function profileForEnd(part: CustomPart, end: 'a' | 'b'): PortProfile {
+  if (part.partType === 'round-transition') return 'round';
   if (part.partType === 'rectangular-to-round-transition') return end === 'a' ? 'rectangular' : 'round';
   if (part.partType === 'round-to-rectangular-transition') return end === 'a' ? 'round' : 'rectangular';
   return 'rectangular';

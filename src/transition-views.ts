@@ -32,7 +32,7 @@ function editableText(key: EditableDimensionKey, value: number, label: string, x
 }
 function bounds(points: P2[]): { minX: number; maxX: number; minY: number; maxY: number } { return { minX: Math.min(...points.map((p) => p.x)), maxX: Math.max(...points.map((p) => p.x)), minY: Math.min(...points.map((p) => p.y)), maxY: Math.max(...points.map((p) => p.y)) }; }
 function profileSize(part: CustomPart, end: 'a' | 'b'): { round: boolean; width: number; height: number; diameter: number } {
-  const round = end === 'a' ? part.partType === 'round-to-rectangular-transition' : part.partType === 'rectangular-to-round-transition';
+  const round = part.partType === 'round-transition' || (end === 'a' ? part.partType === 'round-to-rectangular-transition' : part.partType === 'rectangular-to-round-transition');
   return { round, width: end === 'a' ? part.endAWidthMm : part.endBWidthMm, height: end === 'a' ? part.endAHeightMm : part.endBHeightMm, diameter: end === 'a' ? part.endADiameterMm : part.endBDiameterMm };
 }
 function edgeLength(a: Vertex3, b: Vertex3, projection: Projection): number {
@@ -40,6 +40,7 @@ function edgeLength(a: Vertex3, b: Vertex3, projection: Projection): number {
   if (projection === 'side') return Math.hypot(b.z - a.z, b.y - a.y);
   return Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z);
 }
+function endLocked(part: CustomPart, end: 'a' | 'b'): boolean { const locks = end === 'a' ? part.portALocks : part.portBLocks; return Boolean(locks && (locks.grounded || locks.position.x || locks.position.y || locks.position.z || locks.profileLocked)); }
 
 export function renderTechnicalView(part: CustomPart, geometry: TransitionGeometry, projection: Projection, showDimensions: boolean, grid: GridSize, selection: TechnicalSelection = {}): string {
   const points = geometry.vertices.map((vertex) => projectVertex(vertex, projection)); const ringA = geometry.endRings[0].map((index) => points[index]); const ringB = geometry.endRings[1].map((index) => points[index]); const aBounds = bounds(ringA); const bBounds = bounds(ringB);
@@ -81,5 +82,5 @@ export function renderTechnicalView(part: CustomPart, geometry: TransitionGeomet
       dimensions += `<text data-edge-kind="${derivedKind}" data-edge-index="${edgeIndex}" role="button" tabindex="0" aria-label="Edit calculated ${projection} edge length, currently ${length.toFixed(1)} millimetres" class="editable-target editable-value derived-edge-value${selection.edgeKind === derivedKind && (selection.edgeIndex ?? 0) === edgeIndex ? ' selected' : ''}" x="${(centreA.x + centreB.x) / 2}" y="${maxY + padding * .8}" text-anchor="middle">Edge ${length.toFixed(1)} mm</text>`;
     }
   }
-  return `<figure class="technical-view${selection.key || selection.edgeKind ? ' has-selection' : ''}"><svg viewBox="${viewBox}" role="img" aria-label="${projection} view of ${esc(part.name)}">${gridMarkup}${defs}${links}${polygon(ringA, `profile end-a${selection.key?.startsWith('endA') ? ' selected' : ''}`)}${polygon(ringB, `profile end-b${selection.key?.startsWith('endB') ? ' selected' : ''}`)}${profileHits}${line(centreA, centreB, 'centre')}<text class="port-id" x="${centreA.x}" y="${centreA.y - 12}" text-anchor="middle">P1</text><text class="port-id" x="${centreB.x}" y="${centreB.y - 12}" text-anchor="middle">P2</text>${dimensions}</svg><figcaption>${projection.toUpperCase()} VIEW · ${esc(part.name)}</figcaption></figure>`;
+  return `<figure class="technical-view${selection.key || selection.edgeKind ? ' has-selection' : ''}"><svg viewBox="${viewBox}" role="img" aria-label="${projection} view of ${esc(part.name)}">${gridMarkup}${defs}${links}${polygon(ringA, `profile end-a${selection.key?.startsWith('endA') ? ' selected' : ''}`)}${polygon(ringB, `profile end-b${selection.key?.startsWith('endB') ? ' selected' : ''}`)}${profileHits}${line(centreA, centreB, 'centre')}<text class="port-id" x="${centreA.x}" y="${centreA.y - 12}" text-anchor="middle">P1${endLocked(part, 'a') ? ' · LOCK' : ''}</text><text class="port-id" x="${centreB.x}" y="${centreB.y - 12}" text-anchor="middle">P2${endLocked(part, 'b') ? ' · LOCK' : ''}</text>${dimensions}</svg><figcaption>${projection.toUpperCase()} VIEW · ${esc(part.name)}</figcaption></figure>`;
 }

@@ -4,7 +4,10 @@ import { profileForEnd, syncCustomPartAssembly } from './custom-part-assembly';
 import { downloadCustomPartPdf } from './custom-part-pdf';
 import { buildTransitionGeometry, classifyTransition, dimensionLabel, dimensionUnit, solveBodyLengthFromEdge, swapTransitionEnds, validateCustomPart, validateDimensionValue, type DerivedEdgeKind, type EditableDimensionKey, type TransitionGeometry } from './transition-geometry';
 import { renderTechnicalView, type GridSize, type TechnicalSelection } from './transition-views';
-import { PART_TEMPLATES, templateForPart, templateThumbnail, defaultPlenumPorts, type PartTemplateDefinition, type PartTemplateId } from './part-templates';
+import { PART_CATALOGUE, CATALOGUE_CATEGORIES, templateForPart, templateThumbnail, type PartTemplateId } from './part-templates';
+import { DEMO_TEMPLATE_IDS, PROMOTIONAL_TEMPLATES, promotionalTemplateById, promotionalTemplateForPart, promotionalThumbnail, type PromotionalTemplateDefinition, type PromotionalTemplateId } from './promotional-templates';
+import { anchorOffset, checkEdit, derivedLengthMm, ensureLocks, isOverConstrained, lockLevel, lockStateFor, plenumLockWarnings, quickAction, withLockState, type LockTarget } from './part-locks';
+import { emptyLockState } from './types';
 import { buildPlenumGeometry, nextPortId, portSizeLabel } from './plenum-geometry';
 import { renderPlenumViews } from './plenum-views';
 import type { CustomPart, CustomPartType, PersonalTemplate, PlenumFace, PlenumPort, VerificationStatus } from './types';
@@ -50,18 +53,20 @@ function htmlEscape(value: string): string { return value.replace(/[&<>'"]/g, (c
 export function initCustomPartBuilder(root: HTMLElement, options: BuilderOptions): BuilderController {
   root.innerHTML = `<section id="builderLibrary" class="tpl-library">
     <div class="tpl-lib-head">
-      <div><span class="eyebrow">Custom Part Library</span><h2>Choose a fitting template</h2><p class="help">Pick the closest family, then change its dimensions, offsets, angles and connections.</p></div>
-      <label class="field tpl-search"><span class="label">Search</span><input id="tplSearch" class="input" placeholder="Name, profile, connection or tag"></label>
+      <div><span class="eyebrow">Custom Part Library</span><h2>Choose a fitting template</h2><p class="help">12 Ready templates use real shared geometry, technical views, local saving and PDF export.</p></div>
+      <div class="tpl-lib-actions"><button id="builderDemoMode" class="btn">Demo mode</button><label class="field tpl-search"><span class="label">Search</span><input id="tplSearch" class="input" placeholder="Name, profile, connection or tag"></label></div>
     </div>
     <div id="tplFilters" class="tpl-filters"></div>
     <div id="tplGrid" class="tpl-grid"></div>
   </section>
   <div class="builder-shell" id="builderShell">
     <aside class="builder-controls">
-      <div class="builder-heading"><div><span class="eyebrow" id="builderTemplateName">Parametric fitting</span><h2 id="builderTitle">Transition</h2></div><div class="button-row"><button id="builderBackToLibrary" class="btn small">← Library</button></div></div>
-      <div class="button-row"><button id="builderLoadRectExample" class="btn small">Rect example</button><button id="builderLoadExample" class="btn small">R→Ø example</button></div>
+      <div class="builder-heading"><div><span class="eyebrow" id="builderTemplateName">Parametric fitting</span><h2 id="builderTitle">Transition</h2></div><div class="button-row"><button id="builderBackToLibrary" class="btn small">← Library</button><button id="builderNextDemo" class="btn small hidden">Next demo</button></div></div>
+      <div class="button-row"><button id="builderResetTemplate" class="btn small">Reset template</button><button id="builderRandomExample" class="btn small">Random safe example</button><button id="builderLoadRectExample" class="btn small">Rect example</button><button id="builderLoadExample" class="btn small">R→Ø example</button></div>
+      <div id="lockConflict" class="callout lock-conflict hidden" role="alert"></div>
+      <details class="lock-panel" id="lockPanel" open><summary>Locks <span id="lockSummary" class="badge">unlocked</span></summary><div id="lockBody"></div></details>
       <div id="plenumPanel" class="plenum-panel hidden"></div>
-      <label class="field"><span class="label">Part type</span><select id="builderPartType" class="select"><option value="rectangular-transition">Rectangular → rectangular</option><option value="rectangular-to-round-transition">Rectangular → round</option><option value="round-to-rectangular-transition">Round → rectangular</option><option value="plenum-box">Plenum box with outlets</option></select></label>
+      <label class="field"><span class="label">Part type</span><select id="builderPartType" class="select"><option value="rectangular-transition">Rectangular → rectangular</option><option value="round-transition">Round → round</option><option value="rectangular-to-round-transition">Rectangular → round</option><option value="round-to-rectangular-transition">Round → rectangular</option><option value="plenum-box">Plenum box with outlets</option></select></label>
       <label class="field"><span class="label">Part name</span><input id="builderName" class="input" maxlength="120"><span class="error" data-error="name"></span></label>
       <label class="field"><span class="label">Part number (optional)</span><input id="builderPartNumber" class="input" maxlength="80"></label>
       <div class="suggestion-box"><span>Suggested classification</span><strong id="builderClassification"></strong></div>
@@ -93,6 +98,15 @@ export function initCustomPartBuilder(root: HTMLElement, options: BuilderOptions
       <div id="builderDimensionEditor" class="dimension-editor hidden" role="dialog" aria-modal="false" aria-labelledby="dimensionEditorTitle"><strong id="dimensionEditorTitle"></strong><label><span class="sr-only">New value</span><input id="dimensionEditorInput" class="input" type="number"></label><span id="dimensionEditorUnit" class="dimension-unit"></span><div id="dimensionEditorHelp" class="help"></div><div id="dimensionEditorError" class="error" aria-live="polite"></div><div class="button-row"><button id="dimensionEditorConfirm" class="btn small primary">Confirm</button><button id="dimensionEditorCancel" class="btn small">Cancel</button></div></div>
       <div id="builderTechnicalViews" class="technical-grid"></div>
     </section>
+  </div>
+  <div id="personalTemplateDialog" class="builder-dialog hidden" role="dialog" aria-modal="true" aria-labelledby="personalTemplateDialogTitle">
+    <form id="personalTemplateForm" class="builder-dialog-card">
+      <div class="panel-header"><div><span class="eyebrow">My templates</span><h2 id="personalTemplateDialogTitle">Save personal template</h2></div><button id="personalTemplateClose" class="btn small" type="button" aria-label="Close personal template form">Close</button></div>
+      <label class="field"><span class="label">Template name</span><input id="personalTemplateName" class="input" maxlength="120" required></label>
+      <label class="field"><span class="label">Short description</span><textarea id="personalTemplateDescription" class="input" rows="3" maxlength="300"></textarea></label>
+      <label class="field"><span class="label">Tags</span><input id="personalTemplateTags" class="input" maxlength="200" placeholder="plenum, supply, standard"><span class="help">Comma separated</span></label>
+      <div class="button-row"><button class="btn primary" type="submit">Save template</button><button id="personalTemplateCancel" class="btn" type="button">Cancel</button></div>
+    </form>
   </div>`;
 
   const get = <T extends HTMLElement>(id: string): T => { const value = root.querySelector<T>(`#${id}`); if (!value) throw new Error(`Missing builder element ${id}`); return value; };
@@ -102,7 +116,8 @@ export function initCustomPartBuilder(root: HTMLElement, options: BuilderOptions
   const partTypeInput = get<HTMLSelectElement>('builderPartType'); const nameInput = get<HTMLInputElement>('builderName'); const partNumberInput = get<HTMLInputElement>('builderPartNumber'); const systemInput = get<HTMLSelectElement>('builderSystem'); const materialInput = get<HTMLSelectElement>('builderMaterial'); const notesInput = get<HTMLTextAreaElement>('builderNotes'); const verificationInput = get<HTMLSelectElement>('builderVerification');
   const preview = get<HTMLDivElement>('builder3d'); const technical = get<HTMLDivElement>('builderTechnicalViews'); const metrics = get<HTMLDivElement>('builderMetrics'); const contextPanel = get<HTMLDivElement>('builder3dContext'); const editor = get<HTMLDivElement>('builderDimensionEditor'); const editorInput = get<HTMLInputElement>('dimensionEditorInput'); const editorError = get<HTMLDivElement>('dimensionEditorError');
   let mode: 'library' | 'editor' = 'library';
-  let libraryFilter = 'All'; let librarySearch = ''; let selectedPortId: string | null = null;
+  let libraryFilter = 'All'; let librarySearch = ''; let selectedPortId: string | null = null; let demoMode = false; let demoIndex = 0;
+  let templateFormMode: { kind: 'create' } | { kind: 'rename'; id: string } = { kind: 'create' };
   let draft = blankPart(); let active = false; let editingExisting = false; let currentObject: THREE.Group | null = null; let renderTimer = 0; let selectedDimension: TechnicalSelection = {}; let selectedSurface: 'end-a' | 'end-b' | 'top' | 'bottom' | 'left' | 'right' | 'edge' | null = null; let editorTarget: { key: EditableDimensionKey } | { edgeKind: DerivedEdgeKind; edgeIndex: number } | null = null;
 
   const scene = new THREE.Scene(); scene.background = new THREE.Color(0x0b121c);
@@ -116,9 +131,15 @@ export function initCustomPartBuilder(root: HTMLElement, options: BuilderOptions
   }
   scene.add(new THREE.HemisphereLight(0xdceeff, 0x263442, 2.1)); const keyLight = new THREE.DirectionalLight(0xffffff, 2.5); keyLight.position.set(1, 2, 1); scene.add(keyLight);
 
+  function addPortLabel(group: THREE.Group, label: string, position: { x: number; y: number; z: number }, locked: boolean): void {
+    const canvas = document.createElement('canvas'); canvas.width = 256; canvas.height = 64; const context = canvas.getContext('2d'); if (!context) return;
+    context.fillStyle = locked ? '#5b3b0c' : '#0a1722'; context.strokeStyle = locked ? '#ffd36a' : '#74d8ff'; context.lineWidth = 4; context.beginPath(); context.roundRect(2, 2, 252, 60, 12); context.fill(); context.stroke(); context.fillStyle = locked ? '#ffe39a' : '#e8f7ff'; context.font = '700 27px system-ui'; context.textAlign = 'center'; context.textBaseline = 'middle'; context.fillText(`${label}${locked ? '  LOCK' : ''}`, 128, 33);
+    const texture = new THREE.CanvasTexture(canvas); texture.colorSpace = THREE.SRGBColorSpace; const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: texture, transparent: true, depthTest: false })); sprite.position.set(position.x, position.y + 42, position.z); sprite.scale.set(150, 38, 1); sprite.renderOrder = 10; group.add(sprite);
+  }
+
   function disposeObject(): void {
     if (!currentObject) return;
-    currentObject.traverse((object) => { if (object instanceof THREE.Mesh || object instanceof THREE.LineSegments || object instanceof THREE.Line) { object.geometry.dispose(); const materials = Array.isArray(object.material) ? object.material : [object.material]; materials.forEach((material) => material.dispose()); } });
+    currentObject.traverse((object) => { if (object instanceof THREE.Mesh || object instanceof THREE.LineSegments || object instanceof THREE.Line || object instanceof THREE.Sprite) { if ('geometry' in object && object.geometry instanceof THREE.BufferGeometry) object.geometry.dispose(); const materials = Array.isArray(object.material) ? object.material : [object.material]; materials.forEach((material) => { if (material instanceof THREE.SpriteMaterial) material.map?.dispose(); material.dispose(); }); } });
     scene.remove(currentObject); currentObject = null;
   }
   function create3d(geometry: TransitionGeometry): void {
@@ -132,8 +153,12 @@ export function initCustomPartBuilder(root: HTMLElement, options: BuilderOptions
     };
     addMesh('bottom', geometry.sideFaces.slice(0, 6)); addMesh('right', geometry.sideFaces.slice(6, 12)); addMesh('top', geometry.sideFaces.slice(12, 18)); addMesh('left', geometry.sideFaces.slice(18, 24)); addMesh('end-a', [], [...geometry.endRings[0]].reverse()); addMesh('end-b', [], geometry.endRings[1]);
     [0, 6, 12, 18].forEach((index) => { const edgeGeometry = new THREE.BufferGeometry().setFromPoints([geometry.vertices[geometry.endRings[0][index]], geometry.vertices[geometry.endRings[1][index]]].map((point) => new THREE.Vector3(point.x, point.y, point.z))); const edge = new THREE.Line(edgeGeometry, new THREE.LineBasicMaterial({ color: selectedSurface === 'edge' && selectedDimension.edgeIndex === index ? 0xffdc73 : 0xe9f7ff, linewidth: 2 })); edge.userData.pick = 'edge'; edge.userData.edgeIndex = index; group.add(edge); });
-    geometry.ports.forEach((port) => { const length = Math.max(40, draft.lengthMm * .18); const axis = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(port.position.x, port.position.y, port.position.z), new THREE.Vector3(port.position.x + port.direction.x * length, port.position.y + port.direction.y * length, port.position.z + port.direction.z * length)]); group.add(new THREE.Line(axis, new THREE.LineBasicMaterial({ color: port.role === 'inlet' ? 0x65c7ff : 0xffb15c }))); });
+    geometry.ports.forEach((port, index) => { const length = Math.max(40, draft.lengthMm * .18); const axis = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(port.position.x, port.position.y, port.position.z), new THREE.Vector3(port.position.x + port.direction.x * length, port.position.y + port.direction.y * length, port.position.z + port.direction.z * length)]); group.add(new THREE.Line(axis, new THREE.LineBasicMaterial({ color: port.role === 'inlet' ? 0x65c7ff : 0xffb15c }))); addPortLabel(group, index === 0 ? 'P1' : 'P2', port.position, lockLevel(lockStateFor(draft, index === 0 ? 'portA' : 'portB')) !== 'unlocked'); });
     if (get<HTMLInputElement>('builderCentreline').checked) { const centre = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0, 0), new THREE.Vector3(draft.horizontalOffsetMm, draft.verticalOffsetMm, draft.lengthMm)]); group.add(new THREE.Line(centre, new THREE.LineDashedMaterial({ color: 0xffd479, dashSize: Math.max(10, draft.lengthMm / 25), gapSize: Math.max(6, draft.lengthMm / 40) }))); (group.children[group.children.length - 1] as THREE.Line).computeLineDistances(); }
+    // Anchor shift: when P2 is the locked anchor the body regenerates around it, so
+    // P1 visibly moves instead of P2.
+    const shift = anchorOffset(draft);
+    group.position.set(shift.x, shift.y, shift.z);
     currentObject = group; scene.add(group); renderer?.render(scene, camera);
   }
   function fitCamera(direction = new THREE.Vector3(1, .75, 1), up = new THREE.Vector3(0, 1, 0)): void {
@@ -159,33 +184,39 @@ export function initCustomPartBuilder(root: HTMLElement, options: BuilderOptions
   });
 
   // --- Template library -----------------------------------------------------
-  function partFromTemplate(templateId: PartTemplateId): CustomPart {
-    const base = blankPart();
-    const time = timestamp();
-    const common = { ...base, id: newId(), templateId, revision: 'A', tags: [] as string[], favourite: false, createdAt: time, updatedAt: time };
-    if (templateId === 'plenum-box') {
-      return syncCustomPartAssembly({
-        ...common, name: 'Plenum box', partType: 'plenum-box' as CustomPartType,
-        bodyWidthMm: 600, bodyHeightMm: 400, bodyDepthMm: 300,
-        endAWidthMm: 400, endAHeightMm: 200, lengthMm: 300,
-        plenumPorts: defaultPlenumPorts(),
-      });
-    }
-    if (templateId === 'rectangular-to-round') {
-      return syncCustomPartAssembly({ ...common, name: 'Rectangular to round transition', partType: 'rectangular-to-round-transition', endAWidthMm: 500, endAHeightMm: 300, endBDiameterMm: 250, horizontalOffsetMm: 0, verticalOffsetMm: 0 });
-    }
-    if (templateId === 'round-to-rectangular') {
-      return syncCustomPartAssembly({ ...common, name: 'Round to rectangular transition', partType: 'round-to-rectangular-transition', endADiameterMm: 250, endBWidthMm: 400, endBHeightMm: 250, horizontalOffsetMm: 0, verticalOffsetMm: 0 });
-    }
-    return syncCustomPartAssembly({ ...common, name: 'Rectangular transition', partType: 'rectangular-transition' });
+  function partFromTemplate(templateId: PromotionalTemplateId): CustomPart {
+    const template = promotionalTemplateById(templateId); if (!template) throw new Error(`Unknown Ready template: ${templateId}`);
+    const time = timestamp(); const base = blankPart();
+    return ensureLocks(syncCustomPartAssembly({ ...base, ...structuredClone(template.defaults), id: newId(), templateId, partType: template.partType, revision: 'A', tags: [...template.tags], favourite: false, createdAt: time, updatedAt: time }));
   }
+
+  function resetCurrentTemplate(): void {
+    const template = promotionalTemplateForPart(draft); if (!template) { options.notify('This part has no registry preset to reset'); return; }
+    const id = draft.id; const createdAt = draft.createdAt; draft = partFromTemplate(template.id); draft.id = id; draft.createdAt = createdAt; editingExisting = false; selectedPortId = null; lastValidDraft = null; writeDraft(); render(); fitCamera(); options.notify(`${template.name} reset`);
+  }
+
+  function randomSafeExample(): void {
+    const template = promotionalTemplateForPart(draft); if (!template) return;
+    const between = (minimum: number, maximum: number, step = 10): number => Math.round((minimum + Math.random() * (maximum - minimum)) / step) * step;
+    if (draft.partType === 'plenum-box') {
+      draft.bodyWidthMm = between(650, 850, 50); draft.bodyHeightMm = between(450, 600, 50); draft.bodyDepthMm = between(320, 500, 20);
+      draft.plenumPorts = (draft.plenumPorts ?? []).map((item) => ({ ...item, projectionMm: between(70, 140, 10) }));
+    } else {
+      draft.lengthMm = between(450, 900, 25); draft.horizontalOffsetMm = template.family === 'straight' ? 0 : between(-120, 120, 20); draft.verticalOffsetMm = template.family === 'straight' ? 0 : between(-100, 100, 20);
+      if (profileForEnd(draft, 'a') === 'round') draft.endADiameterMm = between(200, 400, 25); else { draft.endAWidthMm = between(400, 700, 50); draft.endAHeightMm = between(250, 450, 50); }
+      if (profileForEnd(draft, 'b') === 'round') draft.endBDiameterMm = template.family === 'straight' ? draft.endADiameterMm : between(160, 315, 5); else { draft.endBWidthMm = template.family === 'straight' ? draft.endAWidthMm : between(250, 500, 50); draft.endBHeightMm = template.family === 'straight' ? draft.endAHeightMm : between(180, 350, 10); }
+    }
+    draft.updatedAt = timestamp(); writeDraft(); render(); fitCamera(); options.notify('Random safe example generated');
+  }
+
+  function openNextDemo(): void { demoIndex = (demoIndex + 1) % DEMO_TEMPLATE_IDS.length; openTemplate(DEMO_TEMPLATE_IDS[demoIndex]); }
 
   function showLibrary(): void { mode = 'library'; get('builderLibrary').classList.remove('hidden'); get('builderShell').classList.add('hidden'); renderLibrary(); }
   function showEditor(): void { mode = 'editor'; get('builderLibrary').classList.add('hidden'); get('builderShell').classList.remove('hidden'); window.setTimeout(() => { resize(); fitCamera(); }, 0); }
 
-  function openTemplate(templateId: PartTemplateId): void {
-    const template = PART_TEMPLATES.find((t) => t.id === templateId);
-    if (!template || template.status !== 'available') { options.notify('This template family is coming in a later development phase'); return; }
+  function openTemplate(templateId: PromotionalTemplateId): void {
+    const template = promotionalTemplateById(templateId);
+    if (!template) { options.notify('This template is not available'); return; }
     draft = partFromTemplate(templateId); editingExisting = false; selectedPortId = null;
     writeDraft(); showEditor(); render(); options.notify(`${template.name} opened`);
   }
@@ -198,17 +229,19 @@ export function initCustomPartBuilder(root: HTMLElement, options: BuilderOptions
     options.notify(`New part started from “${template.name}”`);
   }
 
-  const FILTERS = ['All', 'Rectangular', 'Round', 'Mixed profile', 'Branches', 'Transitions', 'Equipment connections', 'My templates', 'Favourites'];
-  function templateMatches(t: PartTemplateDefinition): boolean {
+  const FILTERS = ['All', 'Ready', 'Beta', 'Planned', 'Rectangular', 'Round', 'Mixed profile', 'Transitions', 'Bends', 'Branches', 'Plenums', 'My templates', 'Favourites'];
+  function templateMatches(t: PromotionalTemplateDefinition): boolean {
     const q = librarySearch.trim().toLowerCase();
-    if (q && !(`${t.name} ${t.description} ${t.category} ${t.inletProfile} ${t.outletProfile} ${t.tags.join(' ')}`.toLowerCase().includes(q))) return false;
+    if (q && !(`${t.name} ${t.description} ${t.category} ${t.profilePath} ${t.tags.join(' ')}`.toLowerCase().includes(q))) return false;
     switch (libraryFilter) {
-      case 'Rectangular': return t.inletProfile === 'rectangular' || t.outletProfile === 'rectangular';
-      case 'Round': return t.inletProfile === 'round' || t.outletProfile === 'round';
-      case 'Mixed profile': return t.inletProfile !== t.outletProfile && t.inletProfile !== 'either';
-      case 'Branches': return t.tags.includes('branches') || t.outletProfile === 'multiple';
-      case 'Transitions': return t.category === 'Transitions';
-      case 'Equipment connections': return t.category === 'Equipment connections';
+      case 'Ready': return true;
+      case 'Beta': case 'Planned': case 'Bends': return false;
+      case 'Rectangular': return t.category === 'Rectangular';
+      case 'Round': return t.category === 'Round';
+      case 'Mixed profile': return t.category === 'Mixed profile';
+      case 'Branches': return t.category === 'Branches';
+      case 'Plenums': return t.category === 'Plenums';
+      case 'Transitions': return t.family.includes('loft');
       case 'My templates': case 'Favourites': return false;
       default: return true;
     }
@@ -221,34 +254,126 @@ export function initCustomPartBuilder(root: HTMLElement, options: BuilderOptions
     const showPersonal = libraryFilter === 'All' || libraryFilter === 'My templates' || libraryFilter === 'Favourites';
     const personalMatches = personal.filter((t) => (libraryFilter !== 'Favourites' || t.favourite)
       && (!q || `${t.name} ${t.description} ${t.tags.join(' ')}`.toLowerCase().includes(q)));
-    const standard = (libraryFilter === 'My templates' || libraryFilter === 'Favourites') ? [] : PART_TEMPLATES.filter(templateMatches);
+    const standard = (libraryFilter === 'My templates' || libraryFilter === 'Favourites') ? [] : PROMOTIONAL_TEMPLATES.filter((template) => (!demoMode || DEMO_TEMPLATE_IDS.includes(template.id)) && templateMatches(template));
 
-    const standardCards = standard.map((t) => `<article class="tpl-card ${t.status === 'coming-later' ? 'later' : ''}">
-      <div class="tpl-thumb">${templateThumbnail(t.id)}</div>
-      <h3>${htmlEscape(t.name)}</h3>
+    const standardCards = standard.map((t) => `<article class="tpl-card status-ready">
+      <div class="tpl-thumb">${promotionalThumbnail(t)}</div>
+      <div class="tpl-card-title"><h3>${htmlEscape(t.name)}</h3><span class="badge ready">Ready</span></div>
       <p>${htmlEscape(t.description)}</p>
-      <div class="tpl-meta"><span>In: ${htmlEscape(t.inletProfile)}</span><span>Out: ${htmlEscape(t.outletProfile)}</span></div>
-      <div class="tpl-params">${htmlEscape(t.parameterSummary)}</div>
-      ${t.status === 'available'
-        ? `<button class="btn small primary" data-open-template="${t.id}">Open template</button>`
-        : '<button class="btn small" disabled>Coming in a later development phase</button>'}
+      <div class="tpl-meta"><span>${htmlEscape(t.profilePath)}</span><span>${t.portCount} ports</span></div>
+      <div class="tpl-params">${htmlEscape(t.parameters)}</div>
+      <button class="btn small primary" data-open-template="${t.id}">Open template</button>
     </article>`).join('');
 
     const personalCards = showPersonal ? personalMatches.map((t) => `<article class="tpl-card personal">
-      <div class="tpl-thumb">${templateThumbnail((t.sourceTemplateId as PartTemplateId) || 'rectangular-transition')}</div>
-      <h3>${t.favourite ? '★ ' : ''}${htmlEscape(t.name)}</h3>
+      <div class="tpl-thumb">${promotionalTemplateById(t.sourceTemplateId) ? promotionalThumbnail(promotionalTemplateById(t.sourceTemplateId)!) : templateThumbnail((t.sourceTemplateId as PartTemplateId) || 'rectangular-transition')}</div>
+      <div class="tpl-card-title"><h3>${t.favourite ? '★ ' : ''}${htmlEscape(t.name)}</h3><span class="badge personal-badge">Mine</span></div>
       <p>${htmlEscape(t.description || 'Personal template')}</p>
       <div class="tpl-meta"><span>My template</span><span>${htmlEscape(t.tags.join(', ') || 'no tags')}</span></div>
       <div class="button-row">
         <button class="btn small primary" data-open-personal="${t.id}">New part</button>
         <button class="btn small" data-fav-personal="${t.id}">${t.favourite ? 'Unfavourite' : 'Favourite'}</button>
+        <button class="btn small" data-rename-personal="${t.id}">Rename</button>
+        <button class="btn small" data-duplicate-personal="${t.id}">Duplicate</button>
         <button class="btn small" data-export-personal="${t.id}">JSON</button>
         <button class="btn small ghost danger" data-delete-personal="${t.id}">Delete</button>
       </div>
     </article>`).join('') : '';
 
     const importCard = `<article class="tpl-card import-card"><div class="tpl-thumb">${templateThumbnail('custom-assembly')}</div><h3>Import personal template</h3><p>Load a template previously exported as JSON. Nothing leaves this browser.</p><button class="btn small" data-import-template>Import JSON…</button></article>`;
-    get('tplGrid').innerHTML = `${standardCards}${personalCards}${importCard}` || '<div class="empty-mini">No templates match this filter.</div>';
+    const catalogueCards = demoMode || libraryFilter === 'Ready' ? '' : renderCatalogueCards();
+    get('tplGrid').innerHTML = `${standardCards}${personalCards}${catalogueCards}${demoMode ? '' : importCard}` || '<div class="empty-mini">No templates match this filter.</div>';
+  }
+
+  // --- Locks ----------------------------------------------------------------
+  let lockTarget: LockTarget = 'portA';
+  let lastValidDraft: CustomPart | null = null;
+
+  const GUARDED_KEYS = [...NUMERIC_KEYS, 'bodyWidthMm', 'bodyHeightMm', 'bodyDepthMm'] as const;
+  function findConflict(previous: CustomPart, next: CustomPart): ReturnType<typeof checkEdit> {
+    for (const key of GUARDED_KEYS) {
+      const before = (previous as unknown as Record<string, number>)[key];
+      const after = (next as unknown as Record<string, number>)[key];
+      if (typeof before !== 'number' || typeof after !== 'number' || before === after) continue;
+      const conflict = checkEdit(previous, key, after);
+      if (conflict) return conflict;
+    }
+    return null;
+  }
+  function restoreFrom(previous: CustomPart): void {
+    GUARDED_KEYS.forEach((key) => {
+      const value = (previous as unknown as Record<string, number>)[key];
+      if (typeof value === 'number') (draft as unknown as Record<string, number>)[key] = value;
+    });
+    writeDraft();
+    if (draft.partType === 'plenum-box') renderPlenumPanel();
+  }
+  function showConflict(conflict: NonNullable<ReturnType<typeof checkEdit>>): void {
+    const box = get('lockConflict');
+    box.classList.remove('hidden');
+    box.innerHTML = `<b>Edit rejected — previous geometry kept.</b><br>${htmlEscape(conflict.message)}<br><small>Locks involved: ${htmlEscape(conflict.involved.join(', '))}</small>`
+      + (conflict.unlockTarget ? `<div class="button-row"><button class="btn small" data-unlock-conflict="${conflict.unlockTarget.target}:${htmlEscape(conflict.unlockTarget.property)}">Unlock conflicting property</button></div>` : '');
+    options.notify(conflict.message);
+  }
+  function clearConflict(): void { const box = get('lockConflict'); box.classList.add('hidden'); box.innerHTML = ''; }
+
+  const AXES: Array<'x' | 'y' | 'z'> = ['x', 'y', 'z'];
+  function renderLockPanel(): void {
+    const locks = lockStateFor(draft, lockTarget);
+    const over = isOverConstrained(draft);
+    const level = lockLevel(locks, over && lockTarget !== 'body');
+    const badge = get('lockSummary');
+    badge.textContent = level; badge.className = `badge lock-${level}`;
+    const targets: Array<{ id: LockTarget; label: string }> = draft.partType === 'plenum-box'
+      ? [{ id: 'body', label: 'Body' }, { id: 'portA', label: 'Inlet P1' }]
+      : [{ id: 'portA', label: 'Port P1' }, { id: 'portB', label: 'Port P2' }, { id: 'body', label: 'Body' }];
+    const dimensionKeys = draft.partType === 'plenum-box'
+      ? ['bodyWidthMm', 'bodyHeightMm', 'bodyDepthMm']
+      : ['lengthMm', 'horizontalOffsetMm', 'verticalOffsetMm'];
+    get('lockBody').innerHTML = `
+      <div class="lock-quick-actions"><button class="btn small" data-quick-lock="portA">Lock P1</button>${draft.partType === 'plenum-box' ? '' : '<button class="btn small" data-quick-lock="portB">Lock P2</button>'}<button class="btn small" data-quick-lock="body">Ground body</button><button class="btn small ghost" data-quick-lock="unlock">Unlock all</button></div>
+      <div class="lock-targets">${targets.map((t) => `<button class="duct-chip ${t.id === lockTarget ? 'active' : ''}" data-lock-target="${t.id}">${t.label}</button>`).join('')}</div>
+      ${over ? `<div class="lock-note">Both ports are position-locked — body length is derived (${derivedLengthMm(draft).toFixed(1)} mm).</div>` : ''}
+      <label class="lock-row"><input type="checkbox" data-lock="grounded" ${locks.grounded ? 'checked' : ''}> Ground component (assembly root)</label>
+      <div class="lock-group"><span class="label">Position</span>${AXES.map((a) => `<label class="lock-chip"><input type="checkbox" data-lock="position.${a}" ${locks.position[a] ? 'checked' : ''}> ${a.toUpperCase()}</label>`).join('')}</div>
+      <div class="lock-group"><span class="label">Rotation</span>${AXES.map((a) => `<label class="lock-chip"><input type="checkbox" data-lock="rotation.${a}" ${locks.rotation[a] ? 'checked' : ''}> ${a.toUpperCase()}</label>`).join('')}</div>
+      <label class="lock-row"><input type="checkbox" data-lock="profileLocked" ${locks.profileLocked ? 'checked' : ''}> Lock profile size</label>
+      <label class="lock-row"><input type="checkbox" data-lock="connectionLocked" ${locks.connectionLocked ? 'checked' : ''}> Lock connection</label>
+      <label class="lock-row"><input type="checkbox" data-lock="hostFaceLocked" ${locks.hostFaceLocked ? 'checked' : ''}> Lock host face</label>
+      <div class="lock-group"><span class="label">Dimensions</span>${dimensionKeys.map((k) => `<label class="lock-chip"><input type="checkbox" data-lock="dimensions.${k}" ${locks.dimensions[k] ? 'checked' : ''}> ${k.replace('Mm', '')}</label>`).join('')}</div>
+      <div class="button-row"><button class="btn small" data-lock-action="lock-all">Lock all</button><button class="btn small" data-lock-action="unlock-all">Unlock all</button></div>
+      <div class="button-row"><button class="btn small" data-lock-action="position-only">Position only</button><button class="btn small" data-lock-action="dimensions-only">Dimensions only</button></div>`;
+  }
+
+  // Full HVAC catalogue. Planned entries are shown but cannot be opened.
+  function renderCatalogueCards(): string {
+    const q = librarySearch.trim().toLowerCase();
+    const statusFilters = ['Ready', 'Beta', 'Planned'];
+    const entries = PART_CATALOGUE.filter((e) => e.status === 'planned' || e.status === 'assembly-only').filter((e) => {
+      if (libraryFilter === 'My templates' || libraryFilter === 'Favourites') return false;
+      if (statusFilters.includes(libraryFilter)) return e.status === libraryFilter.toLowerCase();
+      if (CATALOGUE_CATEGORIES.includes(libraryFilter)) return e.category === libraryFilter;
+      if (libraryFilter === 'Rectangular') return e.inletProfiles.includes('rectangular') || e.outletProfiles.includes('rectangular');
+      if (libraryFilter === 'Round') return e.inletProfiles.includes('round') || e.outletProfiles.includes('round');
+      if (libraryFilter === 'Branches') return e.category === 'Branches' || e.category === 'Saddles and takeoffs';
+      if (libraryFilter === 'Transitions') return e.category === 'Transitions';
+      if (libraryFilter === 'Equipment connections') return e.category === 'Equipment and service';
+      if (libraryFilter === 'Mixed profile') return e.inletProfiles.join() !== e.outletProfiles.join();
+      if (libraryFilter !== 'All') return false;
+      return true;
+    }).filter((e) => !q || `${e.name} ${e.nameFi ?? ''} ${e.category} ${e.subcategory} ${e.tags.join(' ')}`.toLowerCase().includes(q));
+    // Keep the default view readable; filters/search narrow the full catalogue.
+    const shown = libraryFilter === 'All' && !q ? entries.slice(0, 12) : entries;
+    return shown.map((e) => {
+      return `<article class="tpl-card catalogue status-${e.status}">
+        <div class="tpl-thumb">${templateThumbnail(e.thumbnailId)}</div>
+        <h3>${htmlEscape(e.name)}</h3>
+        <p>${htmlEscape(e.nameFi ?? '')} · ${htmlEscape(e.subcategory)}</p>
+        <div class="tpl-meta"><span class="status-chip ${e.status}">${e.status}</span><span>${htmlEscape(e.inletProfiles.join('/'))} → ${htmlEscape(e.outletProfiles.join('/'))}</span><span>${htmlEscape(e.portCount)} ports</span></div>
+        <div class="tpl-params">${htmlEscape(e.parameterSummary)}</div>
+        <button class="btn small" disabled>${e.status === 'assembly-only' ? 'Assembly level — later phase' : 'Planned — geometry generator not implemented yet'}</button>
+      </article>`;
+    }).join('');
   }
 
   // --- Plenum editor --------------------------------------------------------
@@ -303,7 +428,7 @@ export function initCustomPartBuilder(root: HTMLElement, options: BuilderOptions
         </div>
         <div class="button-row"><button class="btn small ghost danger" data-delete-port="${selected.id}">Delete outlet</button></div>
       </fieldset>` : ''}
-      ${geometry.warnings.length ? `<div class="callout">${geometry.warnings.map((w) => htmlEscape(w)).join('<br>')}</div>` : ''}
+      ${(() => { const all = [...geometry.warnings, ...plenumLockWarnings(draft)]; return all.length ? `<div class="callout">${all.map((w) => htmlEscape(w)).join('<br>')}</div>` : ''; })()}
       <fieldset><legend>Port schedule</legend><div class="port-schedule">
         <div class="port-row head"><span>ID</span><span>Role</span><span>Profile</span><span>Size</span><span>Face</span><span>Conn.</span></div>
         ${[geometry.inlet, ...geometry.ports].filter(Boolean).map((p) => { const q = p!.port; return `<div class="port-row"><span>${q.id}</span><span>${q.role}</span><span>${q.shape}</span><span>${htmlEscape(portSizeLabel(q))}</span><span>${q.face}</span><span>${q.projectionMm}</span></div>`; }).join('')}
@@ -350,7 +475,14 @@ export function initCustomPartBuilder(root: HTMLElement, options: BuilderOptions
   }
   function render(): void {
     readDraft(); const errors = validateCustomPart(draft); root.querySelectorAll<HTMLElement>('[data-error]').forEach((element) => { const key = element.dataset.error as keyof CustomPart; element.textContent = errors[key] ?? ''; });
-    const template = templateForPart(draft);
+    // Guard the edit against locks: reject and restore the previous valid geometry.
+    if (lastValidDraft) {
+      const conflict = findConflict(lastValidDraft, draft);
+      if (conflict) { restoreFrom(lastValidDraft); showConflict(conflict); } else clearConflict();
+    }
+    lastValidDraft = structuredClone(draft);
+    renderLockPanel();
+    const template = promotionalTemplateForPart(draft) ?? templateForPart(draft);
     get('builderTemplateName').textContent = template ? template.name : 'Parametric fitting';
     const isPlenum = draft.partType === 'plenum-box';
     get('transitionParams').classList.toggle('hidden', isPlenum);
@@ -361,7 +493,7 @@ export function initCustomPartBuilder(root: HTMLElement, options: BuilderOptions
     if (Object.keys(errors).length) { get<HTMLButtonElement>('builderSave').disabled = true; get<HTMLButtonElement>('builderPdf').disabled = true; return; }
     get<HTMLButtonElement>('builderSave').disabled = false; get<HTMLButtonElement>('builderPdf').disabled = false; draft = syncCustomPartAssembly(draft); const geometry = buildTransitionGeometry(draft); create3d(geometry);
     const showDimensions = get<HTMLInputElement>('builderShowDimensions').checked; const grid = Number(get<HTMLSelectElement>('builderGrid').value) as GridSize;
-    technical.innerHTML = renderTechnicalView(draft, geometry, 'front', showDimensions, grid, selectedDimension) + renderTechnicalView(draft, geometry, 'top', showDimensions, grid, selectedDimension) + renderTechnicalView(draft, geometry, 'side', showDimensions, grid, selectedDimension);
+    technical.innerHTML = renderTechnicalView(draft, geometry, 'isometric', false, grid, selectedDimension) + renderTechnicalView(draft, geometry, 'front', showDimensions, grid, selectedDimension) + renderTechnicalView(draft, geometry, 'top', showDimensions, grid, selectedDimension) + renderTechnicalView(draft, geometry, 'side', showDimensions, grid, selectedDimension);
     const sizeA = profileA === 'round' ? `Ø${draft.endADiameterMm}` : `${draft.endAWidthMm} × ${draft.endAHeightMm}`; const sizeB = profileB === 'round' ? `Ø${draft.endBDiameterMm}` : `${draft.endBWidthMm} × ${draft.endBHeightMm}`; const direction = geometry.ports[1].direction;
     metrics.innerHTML = `<div><span>Port P1</span><b>${sizeA} mm</b></div><div><span>Port P2</span><b>${sizeB} mm</b></div><div><span>Body / centreline</span><b>${draft.lengthMm} / ${geometry.centrelineLengthMm.toFixed(1)} mm</b></div><div><span>Offsets X / Y</span><b>${draft.horizontalOffsetMm > 0 ? '+' : ''}${draft.horizontalOffsetMm} / ${draft.verticalOffsetMm > 0 ? '+' : ''}${draft.verticalOffsetMm} mm</b></div><div><span>P2 direction</span><b>${direction.x.toFixed(3)}, ${direction.y.toFixed(3)}, ${direction.z.toFixed(3)}</b></div><div><span>Surface area</span><b>${geometry.surfaceAreaM2.toFixed(3)} m²</b></div><p>Geometric estimates only; verify all ports, angles and dimensions before fabrication.</p>`;
     NUMERIC_KEYS.forEach((key) => inputs[key].classList.toggle('selected-parameter', selectedDimension.key === key)); renderContext(); renderer?.render(scene, camera);
@@ -370,9 +502,10 @@ export function initCustomPartBuilder(root: HTMLElement, options: BuilderOptions
   function renderPlenum(): void {
     renderPlenumPanel();
     const geometry = buildPlenumGeometry(draft);
+    const errors = validateCustomPart(draft); const valid = !Object.keys(errors).length;
     get('builderTitle').textContent = 'Plenum box with outlets';
     get('builderClassification').textContent = `${geometry.ports.length} outlet${geometry.ports.length === 1 ? '' : 's'}${geometry.warnings.length ? ' · check warnings' : ''}`;
-    get<HTMLButtonElement>('builderSave').disabled = false; get<HTMLButtonElement>('builderPdf').disabled = false;
+    get<HTMLButtonElement>('builderSave').disabled = !valid; get<HTMLButtonElement>('builderPdf').disabled = !valid;
     draft = syncCustomPartAssembly(draft);
 
     disposeObject();
@@ -392,6 +525,7 @@ export function initCustomPartBuilder(root: HTMLElement, options: BuilderOptions
       const selected = entry.port.id === selectedPortId;
       const colour = entry.port.role === 'inlet' ? 0x65c7ff : selected ? 0xffd479 : 0xffb15c;
       drawRing(entry.outline, colour); drawRing(entry.outerRing, colour);
+      addPortLabel(group, entry.port.id, entry.tip, entry.port.id === 'P1' ? lockLevel(lockStateFor(draft, 'portA')) !== 'unlocked' : lockLevel(entry.port.locks ?? emptyLockState()) !== 'unlocked');
       entry.outline.forEach((p, i) => {
         if (i % Math.max(1, Math.floor(entry.outline.length / 8))) return;
         const q = entry.outerRing[i];
@@ -408,6 +542,7 @@ export function initCustomPartBuilder(root: HTMLElement, options: BuilderOptions
       + `<div><span>Volume</span><b>${geometry.volumeM3.toFixed(3)} m³</b></div>`
       + `<div><span>Surface area</span><b>${geometry.surfaceAreaM2.toFixed(3)} m²</b></div>`
       + `<div><span>Warnings</span><b>${geometry.warnings.length}</b></div>`
+      + `${valid ? '' : `<p class="error">${htmlEscape(Object.values(errors).join(' '))}</p>`}`
       + '<p>Geometric reference only. Port openings are not boolean-cut; verify before fabrication.</p>';
   }
 
@@ -427,8 +562,52 @@ export function initCustomPartBuilder(root: HTMLElement, options: BuilderOptions
     if (editor.contains(target) && event.key === 'Escape') { event.preventDefault(); closeEditor(); return; }
     if ((event.key === 'Enter' || event.key === ' ') && target.matches('[data-dimension-key],[data-edge-kind]')) { event.preventDefault(); target.click(); }
   });
+  const templateDialog = get<HTMLDivElement>('personalTemplateDialog');
+  const templateForm = get<HTMLFormElement>('personalTemplateForm');
+  const templateName = get<HTMLInputElement>('personalTemplateName');
+  const templateDescription = get<HTMLTextAreaElement>('personalTemplateDescription');
+  const templateTags = get<HTMLInputElement>('personalTemplateTags');
+  function closeTemplateForm(): void { templateDialog.classList.add('hidden'); }
+  function openTemplateForm(kind: 'create' | 'rename', template?: PersonalTemplate): void {
+    templateFormMode = kind === 'rename' && template ? { kind, id: template.id } : { kind: 'create' };
+    get('personalTemplateDialogTitle').textContent = kind === 'rename' ? 'Rename personal template' : 'Save personal template';
+    templateName.value = template?.name ?? draft.name;
+    templateDescription.value = template?.description ?? '';
+    templateTags.value = template?.tags.join(', ') ?? '';
+    templateDialog.classList.remove('hidden');
+    templateName.focus(); templateName.select();
+  }
+  templateForm.addEventListener('submit', (event) => {
+    event.preventDefault();
+    const name = templateName.value.trim(); if (!name) { templateName.focus(); return; }
+    const description = templateDescription.value.trim();
+    const tags = templateTags.value.split(',').map((tag) => tag.trim()).filter(Boolean);
+    const time = timestamp();
+    if (templateFormMode.kind === 'rename') {
+      const templateId = templateFormMode.id;
+      const template = options.getTemplates?.().find((item) => item.id === templateId);
+      if (!template) { closeTemplateForm(); options.notify('Personal template was not found'); return; }
+      options.saveTemplate?.({ ...template, name, description, tags, updatedAt: time });
+      renderLibrary(); options.notify('Personal template updated');
+    } else {
+      readDraft();
+      options.saveTemplate?.({
+        id: newId(), name, description, tags, favourite: false,
+        sourceTemplateId: promotionalTemplateForPart(draft)?.id ?? templateForPart(draft)?.id ?? draft.partType,
+        part: syncCustomPartAssembly(structuredClone(draft)), createdAt: time, updatedAt: time,
+      });
+      options.notify(`Saved “${name}” as a personal template`);
+    }
+    closeTemplateForm();
+  });
+  get('personalTemplateClose').addEventListener('click', closeTemplateForm);
+  get('personalTemplateCancel').addEventListener('click', closeTemplateForm);
+  templateDialog.addEventListener('click', (event) => { if (event.target === templateDialog) closeTemplateForm(); });
+  templateDialog.addEventListener('keydown', (event) => { if (event.key === 'Escape') { event.preventDefault(); closeTemplateForm(); } });
   // --- Library + plenum + personal-template wiring --------------------------
   get('builderBackToLibrary').addEventListener('click', showLibrary);
+  get('builderResetTemplate').addEventListener('click', resetCurrentTemplate); get('builderRandomExample').addEventListener('click', randomSafeExample); get('builderNextDemo').addEventListener('click', openNextDemo);
+  get('builderDemoMode').addEventListener('click', () => { demoMode = !demoMode; libraryFilter = demoMode ? 'Ready' : 'All'; get('builderDemoMode').textContent = demoMode ? 'Exit demo mode' : 'Demo mode'; get('builderDemoMode').classList.toggle('primary', demoMode); get('builderNextDemo').classList.toggle('hidden', !demoMode); renderLibrary(); options.notify(demoMode ? 'Demo mode: curated Ready templates only' : 'Demo mode closed'); });
   get('tplSearch').addEventListener('input', (event) => { librarySearch = (event.target as HTMLInputElement).value; renderLibrary(); });
   get('tplFilters').addEventListener('click', (event) => {
     const target = (event.target as HTMLElement).closest<HTMLElement>('[data-tpl-filter]'); if (!target) return;
@@ -437,11 +616,20 @@ export function initCustomPartBuilder(root: HTMLElement, options: BuilderOptions
   get('tplGrid').addEventListener('click', (event) => {
     const target = event.target as HTMLElement;
     const open = target.closest<HTMLElement>('[data-open-template]')?.dataset.openTemplate;
-    if (open) { openTemplate(open as PartTemplateId); return; }
+    if (open) { openTemplate(open as PromotionalTemplateId); return; }
+    const cat = target.closest<HTMLElement>('[data-open-catalogue]')?.dataset.openCatalogue;
+    if (cat) {
+      options.notify('Planned — geometry generator not implemented yet');
+      return;
+    }
     const personal = target.closest<HTMLElement>('[data-open-personal]')?.dataset.openPersonal;
     if (personal) { openPersonalTemplate(personal); return; }
     const fav = target.closest<HTMLElement>('[data-fav-personal]')?.dataset.favPersonal;
     if (fav) { const t = options.getTemplates?.().find((x) => x.id === fav); if (t) { options.saveTemplate?.({ ...t, favourite: !t.favourite, updatedAt: timestamp() }); renderLibrary(); } return; }
+    const rename = target.closest<HTMLElement>('[data-rename-personal]')?.dataset.renamePersonal;
+    if (rename) { const template = options.getTemplates?.().find((item) => item.id === rename); if (template) openTemplateForm('rename', template); return; }
+    const duplicate = target.closest<HTMLElement>('[data-duplicate-personal]')?.dataset.duplicatePersonal;
+    if (duplicate) { const t = options.getTemplates?.().find((x) => x.id === duplicate); if (t) { const time = timestamp(); options.saveTemplate?.({ ...structuredClone(t), id: newId(), name: `${t.name} copy`, favourite: false, createdAt: time, updatedAt: time }); renderLibrary(); options.notify('Personal template duplicated'); } return; }
     const del = target.closest<HTMLElement>('[data-delete-personal]')?.dataset.deletePersonal;
     if (del) { const t = options.getTemplates?.().find((x) => x.id === del); if (t && window.confirm(`Delete personal template “${t.name}”?`)) { options.deleteTemplate?.(del); renderLibrary(); } return; }
     const exp = target.closest<HTMLElement>('[data-export-personal]')?.dataset.exportPersonal;
@@ -465,6 +653,51 @@ export function initCustomPartBuilder(root: HTMLElement, options: BuilderOptions
       });
       input.click();
     }
+  });
+  get('lockPanel').addEventListener('click', (event) => {
+    const target = event.target as HTMLElement;
+    const quick = target.closest<HTMLElement>('[data-quick-lock]')?.dataset.quickLock;
+    if (quick) {
+      if (quick === 'unlock') { draft = withLockState(withLockState(withLockState(draft, 'portA', emptyLockState()), 'portB', emptyLockState()), 'body', emptyLockState()); }
+      else if (quick === 'body') { const locks = lockStateFor(draft, 'body'); draft = withLockState(draft, 'body', { ...locks, grounded: true, position: { x: true, y: true, z: true } }); }
+      else { const lock = quick as 'portA' | 'portB'; const locks = lockStateFor(draft, lock); draft = withLockState(draft, lock, { ...locks, position: { x: true, y: true, z: true } }); }
+      lastValidDraft = structuredClone(draft); render(); options.notify(quick === 'unlock' ? 'All locks released' : quick === 'body' ? 'Body grounded' : `${quick === 'portA' ? 'P1' : 'P2'} locked`); return;
+    }
+    const pick = target.closest<HTMLElement>('[data-lock-target]')?.dataset.lockTarget;
+    if (pick) { lockTarget = pick as LockTarget; renderLockPanel(); return; }
+    const action = target.closest<HTMLElement>('[data-lock-action]')?.dataset.lockAction;
+    if (action) {
+      draft = withLockState(draft, lockTarget, quickAction(lockStateFor(draft, lockTarget), action as 'lock-all'));
+      lastValidDraft = structuredClone(draft); renderLockPanel(); render();
+      options.notify(`${action.replace('-', ' ')} applied to ${lockTarget}`);
+    }
+  });
+  get('lockPanel').addEventListener('change', (event) => {
+    const input = (event.target as HTMLElement).closest<HTMLInputElement>('[data-lock]'); if (!input) return;
+    const path = input.dataset.lock ?? ''; const locks = structuredClone(lockStateFor(draft, lockTarget));
+    if (path.startsWith('position.') || path.startsWith('rotation.')) {
+      const [group, axis] = path.split('.') as ['position' | 'rotation', 'x' | 'y' | 'z'];
+      locks[group][axis] = input.checked;
+    } else if (path.startsWith('dimensions.')) {
+      locks.dimensions[path.slice('dimensions.'.length)] = input.checked;
+    } else if (path === 'grounded' || path === 'profileLocked' || path === 'connectionLocked' || path === 'hostFaceLocked') {
+      locks[path] = input.checked;
+    }
+    draft = withLockState(draft, lockTarget, locks);
+    lastValidDraft = structuredClone(draft);
+    renderLockPanel(); render();
+    if (editingExisting) options.onChange?.(structuredClone(draft));
+  });
+  get('lockConflict').addEventListener('click', (event) => {
+    const spec = (event.target as HTMLElement).closest<HTMLElement>('[data-unlock-conflict]')?.dataset.unlockConflict; if (!spec) return;
+    const [target, property] = spec.split(':') as [LockTarget, string];
+    const locks = structuredClone(lockStateFor(draft, target));
+    if (property === 'position') locks.position = { x: false, y: false, z: false }, locks.grounded = false;
+    else if (property === 'profile') locks.profileLocked = false;
+    else delete locks.dimensions[property];
+    draft = withLockState(draft, target, locks);
+    lastValidDraft = structuredClone(draft); clearConflict(); renderLockPanel(); render();
+    options.notify(`Unlocked ${property} on ${target}`);
   });
   get('plenumPanel').addEventListener('click', (event) => {
     const target = event.target as HTMLElement;
@@ -496,17 +729,7 @@ export function initCustomPartBuilder(root: HTMLElement, options: BuilderOptions
   get('plenumPanel').addEventListener('input', applyPlenumInput);
   get('plenumPanel').addEventListener('change', applyPlenumInput);
   get('builderSaveTemplate').addEventListener('click', () => {
-    readDraft();
-    const name = window.prompt('Personal template name:', draft.name); if (!name) return;
-    const description = window.prompt('Short description (optional):', '') ?? '';
-    const tags = (window.prompt('Tags, comma separated (optional):', '') ?? '').split(',').map((t) => t.trim()).filter(Boolean);
-    const time = timestamp();
-    options.saveTemplate?.({
-      id: newId(), name, description, tags, favourite: false,
-      sourceTemplateId: templateForPart(draft)?.id ?? draft.partType,
-      part: syncCustomPartAssembly(structuredClone(draft)), createdAt: time, updatedAt: time,
-    });
-    options.notify(`Saved “${name}” as a personal template`);
+    readDraft(); openTemplateForm('create');
   });
   get('builderDuplicate').addEventListener('click', () => {
     readDraft(); const time = timestamp();
@@ -528,7 +751,7 @@ export function initCustomPartBuilder(root: HTMLElement, options: BuilderOptions
   return {
     load(part, existing = Boolean(part)) {
       if (!part) { showLibrary(); return; }              // no part -> template library
-      draft = structuredClone(part); editingExisting = existing; selectedPortId = null;
+      draft = ensureLocks(structuredClone(part)); editingExisting = existing; selectedPortId = null; lastValidDraft = null;
       writeDraft(); showEditor(); render(); window.setTimeout(() => fitCamera(), 0);
     },
     setActive(value) { active = value; if (active && mode === 'editor') window.setTimeout(() => { resize(); fitCamera(); }, 0); },

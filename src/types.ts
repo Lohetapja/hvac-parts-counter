@@ -6,7 +6,33 @@ export type DuctShape = 'round' | 'rectangular';
 export type Tool = 'pan' | 'calibrate' | 'trace' | 'airflow' | 'axis' | 'label' | 'network-seed' | 'network-trace';
 export type VerificationStatus = 'suggested' | 'verified';
 export type PartSource = 'manual' | 'detected';
-export type CustomPartType = 'rectangular-transition' | 'rectangular-to-round-transition' | 'round-to-rectangular-transition' | 'plenum-box';
+export type CustomPartType = 'rectangular-transition' | 'round-transition' | 'rectangular-to-round-transition' | 'round-to-rectangular-transition' | 'plenum-box';
+
+// --- Locking / grounding ---------------------------------------------------
+export interface AxisLock { x: boolean; y: boolean; z: boolean }
+export interface ElementLockState {
+  grounded: boolean;
+  position: AxisLock;
+  rotation: AxisLock;
+  /** Per-parameter dimension locks, keyed by the parameter name (e.g. lengthMm). */
+  dimensions: Record<string, boolean>;
+  profileLocked: boolean;
+  hostFaceLocked: boolean;
+  connectionLocked: boolean;
+}
+export type LockLevel = 'unlocked' | 'partial' | 'locked' | 'over-constrained';
+
+export function emptyLockState(): ElementLockState {
+  return {
+    grounded: false,
+    position: { x: false, y: false, z: false },
+    rotation: { x: false, y: false, z: false },
+    dimensions: {},
+    profileLocked: false,
+    hostFaceLocked: false,
+    connectionLocked: false,
+  };
+}
 
 // --- Plenum family ---------------------------------------------------------
 export type PlenumFace = 'front' | 'back' | 'top' | 'bottom' | 'left' | 'right';
@@ -25,6 +51,8 @@ export interface PlenumPort {
   rotationDeg: number;
   role: PortRole;
   notes: string;
+  /** Absent on parts created before locking existed (treated as fully unlocked). */
+  locks?: ElementLockState;
 }
 
 // --- Reusable personal template (not a project part) -----------------------
@@ -40,7 +68,7 @@ export interface PersonalTemplate {
   createdAt: string;
   updatedAt: string;
 }
-export type SegmentType = 'rectangular-straight' | 'round-straight' | 'rectangular-transition' | 'rectangular-to-round-transition' | 'round-to-rectangular-transition' | 'rectangular-offset' | 'rectangular-elbow' | 'plenum-box';
+export type SegmentType = 'rectangular-straight' | 'round-straight' | 'rectangular-transition' | 'round-transition' | 'rectangular-to-round-transition' | 'round-to-rectangular-transition' | 'rectangular-offset' | 'rectangular-elbow' | 'plenum-box';
 export type PortProfile = 'rectangular' | 'round';
 export type PortRole = 'inlet' | 'outlet' | 'branch' | 'equipment';
 export interface Vector3 { x: number; y: number; z: number }
@@ -182,6 +210,11 @@ export interface CustomPart {
   bodyDepthMm?: number;
   /** Plenum outlet/branch ports (plenum-box template only). */
   plenumPorts?: PlenumPort[];
+  /** Lock state for the body itself (grounding, body dimensions). */
+  bodyLocks?: ElementLockState;
+  /** Lock state for the transition end ports P1 / P2. */
+  portALocks?: ElementLockState;
+  portBLocks?: ElementLockState;
 }
 
 export type AirflowClassification = 'supply' | 'extract' | 'uncertain';

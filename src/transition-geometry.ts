@@ -26,6 +26,13 @@ export function validateCustomPart(part: CustomPart): ValidationErrors {
     else if (value > MAX_DIMENSION_MM) errors[key] = `Maximum ${MAX_DIMENSION_MM.toLocaleString()} mm.`;
   };
   positive('lengthMm');
+  if (part.partType === 'plenum-box') {
+    (['bodyWidthMm', 'bodyHeightMm', 'bodyDepthMm'] as const).forEach((key) => {
+      const value = part[key]; if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) errors[key] = 'Enter a value greater than zero.'; else if (value > MAX_DIMENSION_MM) errors[key] = `Maximum ${MAX_DIMENSION_MM.toLocaleString()} mm.`;
+    });
+    const invalidPort = (part.plenumPorts ?? []).find((port) => !Number.isFinite(port.offsetHorizontalMm) || !Number.isFinite(port.offsetVerticalMm) || !Number.isFinite(port.projectionMm) || port.projectionMm < 0 || (port.shape === 'round' ? !Number.isFinite(port.diameterMm) || port.diameterMm <= 0 : !Number.isFinite(port.widthMm) || port.widthMm <= 0 || !Number.isFinite(port.heightMm) || port.heightMm <= 0));
+    if (invalidPort) errors.plenumPorts = `${invalidPort.id} has invalid size, position or connector length.`;
+  }
   if (profileForEnd(part, 'a') === 'round') positive('endADiameterMm'); else { positive('endAWidthMm'); positive('endAHeightMm'); }
   if (profileForEnd(part, 'b') === 'round') positive('endBDiameterMm'); else { positive('endBWidthMm'); positive('endBHeightMm'); }
   (['horizontalOffsetMm', 'verticalOffsetMm'] as const).forEach((key) => {
@@ -115,6 +122,11 @@ export function solveBodyLengthFromEdge(part: CustomPart, kind: DerivedEdgeKind,
 
 export function classifyTransition(part: CustomPart): string {
   const centred = part.horizontalOffsetMm === 0 && part.verticalOffsetMm === 0; const angled = part.outletHorizontalAngleDeg !== 0 || part.outletVerticalAngleDeg !== 0;
+  if (part.partType === 'round-transition') {
+    const sameSize = part.endADiameterMm === part.endBDiameterMm;
+    if (sameSize) return centred ? 'Round straight section' : 'Round same-size offset';
+    return `Round ${centred ? 'concentric' : 'eccentric'} ${part.endBDiameterMm > part.endADiameterMm ? 'enlargement' : 'reducer'}${angled ? ' angled' : ''}`;
+  }
   if (part.partType === 'rectangular-to-round-transition') return `Rectangular-to-round ${centred ? 'centred' : 'eccentric'}${angled ? ' angled' : ''} transition`;
   if (part.partType === 'round-to-rectangular-transition') return `Round-to-rectangular ${centred ? 'centred' : 'eccentric'}${angled ? ' angled' : ''} transition`;
   const sameSize = part.endAWidthMm === part.endBWidthMm && part.endAHeightMm === part.endBHeightMm;

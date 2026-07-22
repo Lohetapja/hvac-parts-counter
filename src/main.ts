@@ -32,8 +32,8 @@ function uid(prefix: string): string { return `${prefix}-${Date.now()}-${Math.ra
 function freshProject(): ProjectData {
   const timestamp = now();
   return {
-    version: 8, projectName: 'Tomorrow HVAC Takeoff', drawing: null, page: 1, scaleRatio: 50, customScaleRatio: 50,
-    calibration: { mode: 'preset', mmPerPdfPoint: presetMmPerPdfPoint(50) }, routes: [], parts: [], customParts: [],
+    version: 9, projectName: 'Tomorrow HVAC Takeoff', drawing: null, page: 1, scaleRatio: 50, customScaleRatio: 50,
+    calibration: { mode: 'preset', mmPerPdfPoint: presetMmPerPdfPoint(50) }, routes: [], parts: [], customParts: [], personalTemplates: [],
     airflowMarkers: [], temporaryDuctAxes: [], airflowVisibility: { showSupply: true, showExtract: true, showUncertain: true, verifiedOnly: false, showLabels: true, showVectors: true },
     rejectedDetectionIds: [],
     ductNetworks: [], ductSegments: [], ductNodes: [], ductLabels: [], ductPartMappings: [], contractBoundaries: [], customCatalogue: [], disabledCatalogueIds: [],
@@ -994,7 +994,16 @@ function updateTitleBlockField(key: keyof ScanMetadata, value: string): void {
   markChanged();
 }
 
-builderController = initCustomPartBuilder(els.customBuilderWorkspace, { onSave: saveCustomPart, onChange: updateCustomPartDraft, notify: toast });
+builderController = initCustomPartBuilder(els.customBuilderWorkspace, {
+  onSave: saveCustomPart, onChange: updateCustomPartDraft, notify: toast,
+  getTemplates: () => project.personalTemplates,
+  saveTemplate: (template) => {
+    const index = project.personalTemplates.findIndex((item) => item.id === template.id);
+    if (index >= 0) project.personalTemplates[index] = template; else project.personalTemplates.push(template);
+    markChanged();
+  },
+  deleteTemplate: (id) => { project.personalTemplates = project.personalTemplates.filter((item) => item.id !== id); markChanged(); },
+});
 builderController.setActive(false);
 
 ductUi = initDuctNetworkUi({

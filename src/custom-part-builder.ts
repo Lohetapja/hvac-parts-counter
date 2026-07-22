@@ -4,7 +4,10 @@ import { profileForEnd, syncCustomPartAssembly } from './custom-part-assembly';
 import { downloadCustomPartPdf } from './custom-part-pdf';
 import { buildTransitionGeometry, classifyTransition, dimensionLabel, dimensionUnit, solveBodyLengthFromEdge, swapTransitionEnds, validateCustomPart, validateDimensionValue, type DerivedEdgeKind, type EditableDimensionKey, type TransitionGeometry } from './transition-geometry';
 import { renderTechnicalView, type GridSize, type TechnicalSelection } from './transition-views';
-import type { CustomPart, CustomPartType, VerificationStatus } from './types';
+import { PART_TEMPLATES, templateForPart, templateThumbnail, defaultPlenumPorts, type PartTemplateDefinition, type PartTemplateId } from './part-templates';
+import { buildPlenumGeometry, nextPortId, portSizeLabel } from './plenum-geometry';
+import { renderPlenumViews } from './plenum-views';
+import type { CustomPart, CustomPartType, PersonalTemplate, PlenumFace, PlenumPort, VerificationStatus } from './types';
 
 const SYSTEMS = ['Supply air', 'Extract air', 'Outdoor air', 'Exhaust air', 'Transfer air', 'Other'];
 const MATERIALS = ['Galvanized steel', 'Stainless steel', 'Aluminium', 'Painted steel', 'Other'];
@@ -21,6 +24,10 @@ interface BuilderOptions {
   onSave(part: CustomPart): void;
   onChange?(part: CustomPart): void;
   notify(message: string): void;
+  /** Personal templates are reusable starting points; they never enter the material list. */
+  getTemplates?(): PersonalTemplate[];
+  saveTemplate?(template: PersonalTemplate): void;
+  deleteTemplate?(id: string): void;
 }
 
 function timestamp(): string { return new Date().toISOString(); }
@@ -41,13 +48,24 @@ function blankPart(): CustomPart {
 function htmlEscape(value: string): string { return value.replace(/[&<>'"]/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' })[character] ?? character); }
 
 export function initCustomPartBuilder(root: HTMLElement, options: BuilderOptions): BuilderController {
-  root.innerHTML = `<div class="builder-shell">
+  root.innerHTML = `<section id="builderLibrary" class="tpl-library">
+    <div class="tpl-lib-head">
+      <div><span class="eyebrow">Custom Part Library</span><h2>Choose a fitting template</h2><p class="help">Pick the closest family, then change its dimensions, offsets, angles and connections.</p></div>
+      <label class="field tpl-search"><span class="label">Search</span><input id="tplSearch" class="input" placeholder="Name, profile, connection or tag"></label>
+    </div>
+    <div id="tplFilters" class="tpl-filters"></div>
+    <div id="tplGrid" class="tpl-grid"></div>
+  </section>
+  <div class="builder-shell" id="builderShell">
     <aside class="builder-controls">
-      <div class="builder-heading"><div><span class="eyebrow">Parametric assembly</span><h2 id="builderTitle">Transition</h2></div><div class="button-row"><button id="builderLoadRectExample" class="btn small">Load Rect Example</button><button id="builderLoadExample" class="btn small">Load R→Ø Example</button></div></div>
-      <label class="field"><span class="label">Part type</span><select id="builderPartType" class="select"><option value="rectangular-transition">Rectangular → rectangular</option><option value="rectangular-to-round-transition">Rectangular → round</option><option value="round-to-rectangular-transition">Round → rectangular</option></select></label>
+      <div class="builder-heading"><div><span class="eyebrow" id="builderTemplateName">Parametric fitting</span><h2 id="builderTitle">Transition</h2></div><div class="button-row"><button id="builderBackToLibrary" class="btn small">← Library</button></div></div>
+      <div class="button-row"><button id="builderLoadRectExample" class="btn small">Rect example</button><button id="builderLoadExample" class="btn small">R→Ø example</button></div>
+      <div id="plenumPanel" class="plenum-panel hidden"></div>
+      <label class="field"><span class="label">Part type</span><select id="builderPartType" class="select"><option value="rectangular-transition">Rectangular → rectangular</option><option value="rectangular-to-round-transition">Rectangular → round</option><option value="round-to-rectangular-transition">Round → rectangular</option><option value="plenum-box">Plenum box with outlets</option></select></label>
       <label class="field"><span class="label">Part name</span><input id="builderName" class="input" maxlength="120"><span class="error" data-error="name"></span></label>
       <label class="field"><span class="label">Part number (optional)</span><input id="builderPartNumber" class="input" maxlength="80"></label>
       <div class="suggestion-box"><span>Suggested classification</span><strong id="builderClassification"></strong></div>
+      <div id="transitionParams">
       <fieldset><legend>Port P1 · End A · Z = 0</legend><div id="builderEndARect" class="inline"><label class="field"><span class="label">Width (mm)</span><input id="builderEndAWidth" class="input" type="number" min="1" max="20000"><span class="error" data-error="endAWidthMm"></span></label><label class="field"><span class="label">Height (mm)</span><input id="builderEndAHeight" class="input" type="number" min="1" max="20000"><span class="error" data-error="endAHeightMm"></span></label></div><label id="builderEndARound" class="field hidden"><span class="label">Diameter (mm)</span><input id="builderEndADiameter" class="input" type="number" min="1" max="20000"><span class="error" data-error="endADiameterMm"></span></label></fieldset>
       <fieldset><legend>Port P2 · End B · Z = length</legend><div id="builderEndBRect" class="inline"><label class="field"><span class="label">Width (mm)</span><input id="builderEndBWidth" class="input" type="number" min="1" max="20000"><span class="error" data-error="endBWidthMm"></span></label><label class="field"><span class="label">Height (mm)</span><input id="builderEndBHeight" class="input" type="number" min="1" max="20000"><span class="error" data-error="endBHeightMm"></span></label></div><label id="builderEndBRound" class="field hidden"><span class="label">Diameter (mm)</span><input id="builderEndBDiameter" class="input" type="number" min="1" max="20000"><span class="error" data-error="endBDiameterMm"></span></label></fieldset>
       <label class="field"><span class="label">Body length (mm)</span><input id="builderLength" class="input" type="number" min="1" max="20000"><span class="error" data-error="lengthMm"></span></label>
@@ -59,12 +77,14 @@ export function initCustomPartBuilder(root: HTMLElement, options: BuilderOptions
         <p class="help">+X moves End B right; −X left. +Y moves End B up; −Y down.</p>
       </fieldset>
       <fieldset><legend>Outlet P2 orientation</legend><div class="inline"><label class="field"><span class="label">Horizontal angle (°)</span><input id="builderHorizontalAngle" class="input" type="number" min="-85" max="85"><span class="error" data-error="outletHorizontalAngleDeg"></span></label><label class="field"><span class="label">Vertical angle (°)</span><input id="builderVerticalAngle" class="input" type="number" min="-85" max="85"><span class="error" data-error="outletVerticalAngleDeg"></span></label></div><label class="field"><span class="label">Rotation around outlet axis (°)</span><input id="builderOutletRotation" class="input" type="number" min="-180" max="180"><span class="error" data-error="outletRotationDeg"></span></label><p class="help">Angles define a full direction vector. Positive horizontal turns P2 right; positive vertical tilts P2 up.</p></fieldset>
+      </div>
       <div class="inline"><label class="field"><span class="label">Quantity</span><input id="builderQuantity" class="input" type="number" min="1" max="10000"><span class="error" data-error="quantity"></span></label><label class="field"><span class="label">System</span><select id="builderSystem" class="select">${SYSTEMS.map((value) => `<option>${value}</option>`).join('')}</select></label></div>
       <div class="inline"><label class="field"><span class="label">Material</span><select id="builderMaterial" class="select">${MATERIALS.map((value) => `<option>${value}</option>`).join('')}</select></label><label class="field"><span class="label">Thickness (mm)</span><input id="builderThickness" class="input" type="number" min="0.1" max="20" step="0.1"><span class="error" data-error="thicknessMm"></span></label></div>
       <label class="field"><span class="label">Verification</span><select id="builderVerification" class="select"><option value="suggested">Suggested</option><option value="verified">Verified</option></select></label>
       <label class="field"><span class="label">Notes</span><textarea id="builderNotes" class="input" rows="2" maxlength="500"></textarea></label>
-      <div class="button-row"><button id="builderSwapEnds" class="btn">Swap End A / B</button><button id="builderNew" class="btn ghost">New part</button><button id="builderPdf" class="btn">Export drawing PDF</button></div>
-      <button id="builderSave" class="btn primary builder-save">Save Custom Part</button>
+      <div class="button-row"><button id="builderSwapEnds" class="btn">Swap End A / B</button><button id="builderDuplicate" class="btn">Duplicate as new part</button><button id="builderPdf" class="btn">Export drawing PDF</button></div>
+      <button id="builderSave" class="btn primary builder-save">Save project part</button>
+      <button id="builderSaveTemplate" class="btn builder-save">Save as personal template</button>
     </aside>
     <section class="builder-visuals">
       <div class="builder-preview-panel"><div class="panel-header"><div><h2>Assembly 3D preview</h2><span id="builderEditingStatus" class="badge">New part</span></div><div class="preview-actions"><button class="btn small" data-camera="front">Front</button><button class="btn small" data-camera="top">Top</button><button class="btn small" data-camera="side">Side</button><button class="btn small" data-camera="iso">Isometric</button><button id="builderFitCamera" class="btn small">Fit</button><button id="builderResetCamera" class="btn small">Reset</button></div></div><div id="builder3d" class="builder-3d" aria-label="Interactive 3D custom HVAC fitting preview"></div><div id="builder3dContext" class="builder-context hidden" aria-live="polite"></div><label class="toggle-row"><input id="builderCentreline" type="checkbox" checked> Show 3D centreline</label></div>
@@ -81,6 +101,8 @@ export function initCustomPartBuilder(root: HTMLElement, options: BuilderOptions
   };
   const partTypeInput = get<HTMLSelectElement>('builderPartType'); const nameInput = get<HTMLInputElement>('builderName'); const partNumberInput = get<HTMLInputElement>('builderPartNumber'); const systemInput = get<HTMLSelectElement>('builderSystem'); const materialInput = get<HTMLSelectElement>('builderMaterial'); const notesInput = get<HTMLTextAreaElement>('builderNotes'); const verificationInput = get<HTMLSelectElement>('builderVerification');
   const preview = get<HTMLDivElement>('builder3d'); const technical = get<HTMLDivElement>('builderTechnicalViews'); const metrics = get<HTMLDivElement>('builderMetrics'); const contextPanel = get<HTMLDivElement>('builder3dContext'); const editor = get<HTMLDivElement>('builderDimensionEditor'); const editorInput = get<HTMLInputElement>('dimensionEditorInput'); const editorError = get<HTMLDivElement>('dimensionEditorError');
+  let mode: 'library' | 'editor' = 'library';
+  let libraryFilter = 'All'; let librarySearch = ''; let selectedPortId: string | null = null;
   let draft = blankPart(); let active = false; let editingExisting = false; let currentObject: THREE.Group | null = null; let renderTimer = 0; let selectedDimension: TechnicalSelection = {}; let selectedSurface: 'end-a' | 'end-b' | 'top' | 'bottom' | 'left' | 'right' | 'edge' | null = null; let editorTarget: { key: EditableDimensionKey } | { edgeKind: DerivedEdgeKind; edgeIndex: number } | null = null;
 
   const scene = new THREE.Scene(); scene.background = new THREE.Color(0x0b121c);
@@ -136,6 +158,158 @@ export function initCustomPartBuilder(root: HTMLElement, options: BuilderOptions
     render();
   });
 
+  // --- Template library -----------------------------------------------------
+  function partFromTemplate(templateId: PartTemplateId): CustomPart {
+    const base = blankPart();
+    const time = timestamp();
+    const common = { ...base, id: newId(), templateId, revision: 'A', tags: [] as string[], favourite: false, createdAt: time, updatedAt: time };
+    if (templateId === 'plenum-box') {
+      return syncCustomPartAssembly({
+        ...common, name: 'Plenum box', partType: 'plenum-box' as CustomPartType,
+        bodyWidthMm: 600, bodyHeightMm: 400, bodyDepthMm: 300,
+        endAWidthMm: 400, endAHeightMm: 200, lengthMm: 300,
+        plenumPorts: defaultPlenumPorts(),
+      });
+    }
+    if (templateId === 'rectangular-to-round') {
+      return syncCustomPartAssembly({ ...common, name: 'Rectangular to round transition', partType: 'rectangular-to-round-transition', endAWidthMm: 500, endAHeightMm: 300, endBDiameterMm: 250, horizontalOffsetMm: 0, verticalOffsetMm: 0 });
+    }
+    if (templateId === 'round-to-rectangular') {
+      return syncCustomPartAssembly({ ...common, name: 'Round to rectangular transition', partType: 'round-to-rectangular-transition', endADiameterMm: 250, endBWidthMm: 400, endBHeightMm: 250, horizontalOffsetMm: 0, verticalOffsetMm: 0 });
+    }
+    return syncCustomPartAssembly({ ...common, name: 'Rectangular transition', partType: 'rectangular-transition' });
+  }
+
+  function showLibrary(): void { mode = 'library'; get('builderLibrary').classList.remove('hidden'); get('builderShell').classList.add('hidden'); renderLibrary(); }
+  function showEditor(): void { mode = 'editor'; get('builderLibrary').classList.add('hidden'); get('builderShell').classList.remove('hidden'); window.setTimeout(() => { resize(); fitCamera(); }, 0); }
+
+  function openTemplate(templateId: PartTemplateId): void {
+    const template = PART_TEMPLATES.find((t) => t.id === templateId);
+    if (!template || template.status !== 'available') { options.notify('This template family is coming in a later development phase'); return; }
+    draft = partFromTemplate(templateId); editingExisting = false; selectedPortId = null;
+    writeDraft(); showEditor(); render(); options.notify(`${template.name} opened`);
+  }
+
+  function openPersonalTemplate(id: string): void {
+    const template = options.getTemplates?.().find((t) => t.id === id); if (!template) return;
+    const time = timestamp();
+    draft = syncCustomPartAssembly({ ...structuredClone(template.part), id: newId(), createdAt: time, updatedAt: time });
+    editingExisting = false; selectedPortId = null; writeDraft(); showEditor(); render();
+    options.notify(`New part started from “${template.name}”`);
+  }
+
+  const FILTERS = ['All', 'Rectangular', 'Round', 'Mixed profile', 'Branches', 'Transitions', 'Equipment connections', 'My templates', 'Favourites'];
+  function templateMatches(t: PartTemplateDefinition): boolean {
+    const q = librarySearch.trim().toLowerCase();
+    if (q && !(`${t.name} ${t.description} ${t.category} ${t.inletProfile} ${t.outletProfile} ${t.tags.join(' ')}`.toLowerCase().includes(q))) return false;
+    switch (libraryFilter) {
+      case 'Rectangular': return t.inletProfile === 'rectangular' || t.outletProfile === 'rectangular';
+      case 'Round': return t.inletProfile === 'round' || t.outletProfile === 'round';
+      case 'Mixed profile': return t.inletProfile !== t.outletProfile && t.inletProfile !== 'either';
+      case 'Branches': return t.tags.includes('branches') || t.outletProfile === 'multiple';
+      case 'Transitions': return t.category === 'Transitions';
+      case 'Equipment connections': return t.category === 'Equipment connections';
+      case 'My templates': case 'Favourites': return false;
+      default: return true;
+    }
+  }
+
+  function renderLibrary(): void {
+    get('tplFilters').innerHTML = FILTERS.map((f) => `<button class="btn small tpl-filter ${f === libraryFilter ? 'active' : ''}" data-tpl-filter="${htmlEscape(f)}">${htmlEscape(f)}</button>`).join('');
+    const personal = options.getTemplates?.() ?? [];
+    const q = librarySearch.trim().toLowerCase();
+    const showPersonal = libraryFilter === 'All' || libraryFilter === 'My templates' || libraryFilter === 'Favourites';
+    const personalMatches = personal.filter((t) => (libraryFilter !== 'Favourites' || t.favourite)
+      && (!q || `${t.name} ${t.description} ${t.tags.join(' ')}`.toLowerCase().includes(q)));
+    const standard = (libraryFilter === 'My templates' || libraryFilter === 'Favourites') ? [] : PART_TEMPLATES.filter(templateMatches);
+
+    const standardCards = standard.map((t) => `<article class="tpl-card ${t.status === 'coming-later' ? 'later' : ''}">
+      <div class="tpl-thumb">${templateThumbnail(t.id)}</div>
+      <h3>${htmlEscape(t.name)}</h3>
+      <p>${htmlEscape(t.description)}</p>
+      <div class="tpl-meta"><span>In: ${htmlEscape(t.inletProfile)}</span><span>Out: ${htmlEscape(t.outletProfile)}</span></div>
+      <div class="tpl-params">${htmlEscape(t.parameterSummary)}</div>
+      ${t.status === 'available'
+        ? `<button class="btn small primary" data-open-template="${t.id}">Open template</button>`
+        : '<button class="btn small" disabled>Coming in a later development phase</button>'}
+    </article>`).join('');
+
+    const personalCards = showPersonal ? personalMatches.map((t) => `<article class="tpl-card personal">
+      <div class="tpl-thumb">${templateThumbnail((t.sourceTemplateId as PartTemplateId) || 'rectangular-transition')}</div>
+      <h3>${t.favourite ? '★ ' : ''}${htmlEscape(t.name)}</h3>
+      <p>${htmlEscape(t.description || 'Personal template')}</p>
+      <div class="tpl-meta"><span>My template</span><span>${htmlEscape(t.tags.join(', ') || 'no tags')}</span></div>
+      <div class="button-row">
+        <button class="btn small primary" data-open-personal="${t.id}">New part</button>
+        <button class="btn small" data-fav-personal="${t.id}">${t.favourite ? 'Unfavourite' : 'Favourite'}</button>
+        <button class="btn small" data-export-personal="${t.id}">JSON</button>
+        <button class="btn small ghost danger" data-delete-personal="${t.id}">Delete</button>
+      </div>
+    </article>`).join('') : '';
+
+    const importCard = `<article class="tpl-card import-card"><div class="tpl-thumb">${templateThumbnail('custom-assembly')}</div><h3>Import personal template</h3><p>Load a template previously exported as JSON. Nothing leaves this browser.</p><button class="btn small" data-import-template>Import JSON…</button></article>`;
+    get('tplGrid').innerHTML = `${standardCards}${personalCards}${importCard}` || '<div class="empty-mini">No templates match this filter.</div>';
+  }
+
+  // --- Plenum editor --------------------------------------------------------
+  const FACES: PlenumFace[] = ['front', 'back', 'top', 'bottom', 'left', 'right'];
+  function plenumPorts(): PlenumPort[] { return draft.plenumPorts ?? []; }
+  function updatePorts(next: PlenumPort[]): void { draft.plenumPorts = next; draft.updatedAt = timestamp(); render(); if (editingExisting) options.onChange?.(structuredClone(draft)); }
+
+  function addPort(shape: 'round' | 'rectangular'): void {
+    const ports = plenumPorts();
+    const id = nextPortId(ports);
+    ports.push({ id, name: `Outlet ${id}`, face: 'front', shape, widthMm: 300, heightMm: 200, diameterMm: 160, offsetHorizontalMm: 0, offsetVerticalMm: 0, projectionMm: 80, rotationDeg: 0, role: 'outlet', notes: '' });
+    selectedPortId = id; updatePorts(ports); options.notify(`${shape === 'round' ? 'Round' : 'Rectangular'} outlet ${id} added`);
+  }
+
+  function renderPlenumPanel(): void {
+    const panel = get('plenumPanel');
+    if (draft.partType !== 'plenum-box') { panel.classList.add('hidden'); panel.innerHTML = ''; return; }
+    panel.classList.remove('hidden');
+    const geometry = buildPlenumGeometry(draft);
+    const ports = plenumPorts();
+    const selected = ports.find((p) => p.id === selectedPortId) ?? null;
+    panel.innerHTML = `
+      <fieldset><legend>Body</legend><div class="inline">
+        <label class="field"><span class="label">Width (mm)</span><input class="input" type="number" inputmode="numeric" data-plenum="bodyWidthMm" value="${draft.bodyWidthMm ?? 600}"></label>
+        <label class="field"><span class="label">Height (mm)</span><input class="input" type="number" inputmode="numeric" data-plenum="bodyHeightMm" value="${draft.bodyHeightMm ?? 400}"></label></div>
+        <label class="field"><span class="label">Depth (mm)</span><input class="input" type="number" inputmode="numeric" data-plenum="bodyDepthMm" value="${draft.bodyDepthMm ?? 300}"></label>
+      </fieldset>
+      <fieldset><legend>Inlet P1 (back face)</legend><div class="inline">
+        <label class="field"><span class="label">Width (mm)</span><input class="input" type="number" inputmode="numeric" data-plenum="endAWidthMm" value="${draft.endAWidthMm}"></label>
+        <label class="field"><span class="label">Height (mm)</span><input class="input" type="number" inputmode="numeric" data-plenum="endAHeightMm" value="${draft.endAHeightMm}"></label></div>
+      </fieldset>
+      <fieldset><legend>Outlets (${ports.length})</legend>
+        <div class="button-row"><button class="btn small" data-add-port="round">+ Round outlet</button><button class="btn small" data-add-port="rectangular">+ Rectangular outlet</button></div>
+        <div class="port-chips">${ports.map((p) => `<button class="duct-chip ${p.id === selectedPortId ? 'active' : ''}" data-select-port="${p.id}">${p.id} · ${htmlEscape(portSizeLabel(p))} · ${p.face}</button>`).join('') || '<span class="empty-mini">No outlets yet.</span>'}</div>
+      </fieldset>
+      ${selected ? `<fieldset><legend>Selected outlet ${selected.id}</legend>
+        <label class="field"><span class="label">Name</span><input class="input" data-port-field="name" value="${htmlEscape(selected.name)}"></label>
+        <div class="inline">
+          <label class="field"><span class="label">Face</span><select class="select" data-port-field="face">${FACES.map((f) => `<option value="${f}"${f === selected.face ? ' selected' : ''}>${f}</option>`).join('')}</select></label>
+          <label class="field"><span class="label">Shape</span><select class="select" data-port-field="shape"><option value="round"${selected.shape === 'round' ? ' selected' : ''}>Round</option><option value="rectangular"${selected.shape === 'rectangular' ? ' selected' : ''}>Rectangular</option></select></label>
+        </div>
+        ${selected.shape === 'round'
+          ? `<label class="field"><span class="label">Diameter (mm)</span><input class="input" type="number" inputmode="numeric" data-port-field="diameterMm" value="${selected.diameterMm}"></label>`
+          : `<div class="inline"><label class="field"><span class="label">Width (mm)</span><input class="input" type="number" inputmode="numeric" data-port-field="widthMm" value="${selected.widthMm}"></label><label class="field"><span class="label">Height (mm)</span><input class="input" type="number" inputmode="numeric" data-port-field="heightMm" value="${selected.heightMm}"></label></div>`}
+        <div class="inline">
+          <label class="field"><span class="label">Offset H (mm)</span><input class="input" type="number" inputmode="numeric" data-port-field="offsetHorizontalMm" value="${selected.offsetHorizontalMm}"></label>
+          <label class="field"><span class="label">Offset V (mm)</span><input class="input" type="number" inputmode="numeric" data-port-field="offsetVerticalMm" value="${selected.offsetVerticalMm}"></label>
+        </div>
+        <div class="inline">
+          <label class="field"><span class="label">Connector (mm)</span><input class="input" type="number" inputmode="numeric" data-port-field="projectionMm" value="${selected.projectionMm}"></label>
+          <label class="field"><span class="label">Rotation (°)</span><input class="input" type="number" inputmode="numeric" data-port-field="rotationDeg" value="${selected.rotationDeg}"></label>
+        </div>
+        <div class="button-row"><button class="btn small ghost danger" data-delete-port="${selected.id}">Delete outlet</button></div>
+      </fieldset>` : ''}
+      ${geometry.warnings.length ? `<div class="callout">${geometry.warnings.map((w) => htmlEscape(w)).join('<br>')}</div>` : ''}
+      <fieldset><legend>Port schedule</legend><div class="port-schedule">
+        <div class="port-row head"><span>ID</span><span>Role</span><span>Profile</span><span>Size</span><span>Face</span><span>Conn.</span></div>
+        ${[geometry.inlet, ...geometry.ports].filter(Boolean).map((p) => { const q = p!.port; return `<div class="port-row"><span>${q.id}</span><span>${q.role}</span><span>${q.shape}</span><span>${htmlEscape(portSizeLabel(q))}</span><span>${q.face}</span><span>${q.projectionMm}</span></div>`; }).join('')}
+      </div></fieldset>`;
+  }
+
   function readDraft(): void {
     NUMERIC_KEYS.forEach((key) => { draft[key] = Number(inputs[key].value) as never; });
     draft.partType = partTypeInput.value as CustomPartType; draft.name = nameInput.value; draft.partNumber = partNumberInput.value.trim(); draft.system = systemInput.value; draft.material = materialInput.value; draft.notes = notesInput.value; draft.verificationStatus = verificationInput.value as VerificationStatus; draft.updatedAt = timestamp();
@@ -176,6 +350,12 @@ export function initCustomPartBuilder(root: HTMLElement, options: BuilderOptions
   }
   function render(): void {
     readDraft(); const errors = validateCustomPart(draft); root.querySelectorAll<HTMLElement>('[data-error]').forEach((element) => { const key = element.dataset.error as keyof CustomPart; element.textContent = errors[key] ?? ''; });
+    const template = templateForPart(draft);
+    get('builderTemplateName').textContent = template ? template.name : 'Parametric fitting';
+    const isPlenum = draft.partType === 'plenum-box';
+    get('transitionParams').classList.toggle('hidden', isPlenum);
+    if (isPlenum) { renderPlenum(); return; }
+    get('plenumPanel').classList.add('hidden');
     const profileA = profileForEnd(draft, 'a'); const profileB = profileForEnd(draft, 'b'); get('builderEndARect').classList.toggle('hidden', profileA !== 'rectangular'); get('builderEndARound').classList.toggle('hidden', profileA !== 'round'); get('builderEndBRect').classList.toggle('hidden', profileB !== 'rectangular'); get('builderEndBRound').classList.toggle('hidden', profileB !== 'round');
     get('builderTitle').textContent = partTypeInput.selectedOptions[0]?.textContent ?? 'Transition'; get('builderClassification').textContent = classifyTransition(draft);
     if (Object.keys(errors).length) { get<HTMLButtonElement>('builderSave').disabled = true; get<HTMLButtonElement>('builderPdf').disabled = true; return; }
@@ -186,6 +366,51 @@ export function initCustomPartBuilder(root: HTMLElement, options: BuilderOptions
     metrics.innerHTML = `<div><span>Port P1</span><b>${sizeA} mm</b></div><div><span>Port P2</span><b>${sizeB} mm</b></div><div><span>Body / centreline</span><b>${draft.lengthMm} / ${geometry.centrelineLengthMm.toFixed(1)} mm</b></div><div><span>Offsets X / Y</span><b>${draft.horizontalOffsetMm > 0 ? '+' : ''}${draft.horizontalOffsetMm} / ${draft.verticalOffsetMm > 0 ? '+' : ''}${draft.verticalOffsetMm} mm</b></div><div><span>P2 direction</span><b>${direction.x.toFixed(3)}, ${direction.y.toFixed(3)}, ${direction.z.toFixed(3)}</b></div><div><span>Surface area</span><b>${geometry.surfaceAreaM2.toFixed(3)} m²</b></div><p>Geometric estimates only; verify all ports, angles and dimensions before fabrication.</p>`;
     NUMERIC_KEYS.forEach((key) => inputs[key].classList.toggle('selected-parameter', selectedDimension.key === key)); renderContext(); renderer?.render(scene, camera);
   }
+  // Plenum uses the same buildPlenumGeometry() output for 3D, views and schedule.
+  function renderPlenum(): void {
+    renderPlenumPanel();
+    const geometry = buildPlenumGeometry(draft);
+    get('builderTitle').textContent = 'Plenum box with outlets';
+    get('builderClassification').textContent = `${geometry.ports.length} outlet${geometry.ports.length === 1 ? '' : 's'}${geometry.warnings.length ? ' · check warnings' : ''}`;
+    get<HTMLButtonElement>('builderSave').disabled = false; get<HTMLButtonElement>('builderPdf').disabled = false;
+    draft = syncCustomPartAssembly(draft);
+
+    disposeObject();
+    const group = new THREE.Group();
+    const body = new THREE.Mesh(
+      new THREE.BoxGeometry(draft.bodyWidthMm ?? 600, draft.bodyHeightMm ?? 400, draft.bodyDepthMm ?? 300),
+      new THREE.MeshStandardMaterial({ color: 0x5b9fc4, metalness: .45, roughness: .5, transparent: true, opacity: .55, side: THREE.DoubleSide }),
+    );
+    group.add(body);
+    group.add(new THREE.LineSegments(new THREE.EdgesGeometry(body.geometry), new THREE.LineBasicMaterial({ color: 0xd8efff })));
+    const drawRing = (points: { x: number; y: number; z: number }[], colour: number): void => {
+      const closed = [...points, points[0]].map((p) => new THREE.Vector3(p.x, p.y, p.z));
+      group.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(closed), new THREE.LineBasicMaterial({ color: colour })));
+    };
+    [geometry.inlet, ...geometry.ports].forEach((entry) => {
+      if (!entry) return;
+      const selected = entry.port.id === selectedPortId;
+      const colour = entry.port.role === 'inlet' ? 0x65c7ff : selected ? 0xffd479 : 0xffb15c;
+      drawRing(entry.outline, colour); drawRing(entry.outerRing, colour);
+      entry.outline.forEach((p, i) => {
+        if (i % Math.max(1, Math.floor(entry.outline.length / 8))) return;
+        const q = entry.outerRing[i];
+        group.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(p.x, p.y, p.z), new THREE.Vector3(q.x, q.y, q.z)]), new THREE.LineBasicMaterial({ color: colour })));
+      });
+    });
+    currentObject = group; scene.add(group); renderer?.render(scene, camera);
+
+    const showDimensions = get<HTMLInputElement>('builderShowDimensions').checked;
+    technical.innerHTML = renderPlenumViews(draft, showDimensions);
+    metrics.innerHTML = `<div><span>Body</span><b>${draft.bodyWidthMm} × ${draft.bodyHeightMm} × ${draft.bodyDepthMm} mm</b></div>`
+      + `<div><span>Inlet P1</span><b>${draft.endAWidthMm} × ${draft.endAHeightMm} mm</b></div>`
+      + `<div><span>Outlets</span><b>${geometry.ports.length}</b></div>`
+      + `<div><span>Volume</span><b>${geometry.volumeM3.toFixed(3)} m³</b></div>`
+      + `<div><span>Surface area</span><b>${geometry.surfaceAreaM2.toFixed(3)} m²</b></div>`
+      + `<div><span>Warnings</span><b>${geometry.warnings.length}</b></div>`
+      + '<p>Geometric reference only. Port openings are not boolean-cut; verify before fabrication.</p>';
+  }
+
   function scheduleRender(): void { window.clearTimeout(renderTimer); renderTimer = window.setTimeout(() => { render(); if (editingExisting && !Object.keys(validateCustomPart(draft)).length) options.onChange?.(structuredClone(draft)); }, 70); }
   root.addEventListener('input', (event) => { if (!(event.target as HTMLElement).closest('.dimension-editor')) scheduleRender(); }); root.addEventListener('change', (event) => { if (!(event.target as HTMLElement).closest('.dimension-editor')) scheduleRender(); });
   root.addEventListener('click', (event) => {
@@ -202,22 +427,111 @@ export function initCustomPartBuilder(root: HTMLElement, options: BuilderOptions
     if (editor.contains(target) && event.key === 'Escape') { event.preventDefault(); closeEditor(); return; }
     if ((event.key === 'Enter' || event.key === ' ') && target.matches('[data-dimension-key],[data-edge-kind]')) { event.preventDefault(); target.click(); }
   });
+  // --- Library + plenum + personal-template wiring --------------------------
+  get('builderBackToLibrary').addEventListener('click', showLibrary);
+  get('tplSearch').addEventListener('input', (event) => { librarySearch = (event.target as HTMLInputElement).value; renderLibrary(); });
+  get('tplFilters').addEventListener('click', (event) => {
+    const target = (event.target as HTMLElement).closest<HTMLElement>('[data-tpl-filter]'); if (!target) return;
+    libraryFilter = target.dataset.tplFilter ?? 'All'; renderLibrary();
+  });
+  get('tplGrid').addEventListener('click', (event) => {
+    const target = event.target as HTMLElement;
+    const open = target.closest<HTMLElement>('[data-open-template]')?.dataset.openTemplate;
+    if (open) { openTemplate(open as PartTemplateId); return; }
+    const personal = target.closest<HTMLElement>('[data-open-personal]')?.dataset.openPersonal;
+    if (personal) { openPersonalTemplate(personal); return; }
+    const fav = target.closest<HTMLElement>('[data-fav-personal]')?.dataset.favPersonal;
+    if (fav) { const t = options.getTemplates?.().find((x) => x.id === fav); if (t) { options.saveTemplate?.({ ...t, favourite: !t.favourite, updatedAt: timestamp() }); renderLibrary(); } return; }
+    const del = target.closest<HTMLElement>('[data-delete-personal]')?.dataset.deletePersonal;
+    if (del) { const t = options.getTemplates?.().find((x) => x.id === del); if (t && window.confirm(`Delete personal template “${t.name}”?`)) { options.deleteTemplate?.(del); renderLibrary(); } return; }
+    const exp = target.closest<HTMLElement>('[data-export-personal]')?.dataset.exportPersonal;
+    if (exp) {
+      const t = options.getTemplates?.().find((x) => x.id === exp); if (!t) return;
+      const url = URL.createObjectURL(new Blob([JSON.stringify(t, null, 2)], { type: 'application/json' }));
+      const a = document.createElement('a'); a.href = url; a.download = `${t.name.replace(/[^a-z0-9_-]+/gi, '-').toLowerCase()}-template.json`; a.click();
+      window.setTimeout(() => URL.revokeObjectURL(url), 0); options.notify('Personal template exported as JSON'); return;
+    }
+    if (target.closest('[data-import-template]')) {
+      const input = document.createElement('input'); input.type = 'file'; input.accept = 'application/json,.json';
+      input.addEventListener('change', () => {
+        const file = input.files?.[0]; if (!file) return;
+        file.text().then((text) => {
+          const parsed: unknown = JSON.parse(text);
+          if (!parsed || typeof parsed !== 'object' || !('part' in parsed)) { options.notify('That JSON is not a personal template'); return; }
+          const incoming = parsed as PersonalTemplate;
+          options.saveTemplate?.({ ...incoming, id: newId(), createdAt: timestamp(), updatedAt: timestamp() });
+          renderLibrary(); options.notify(`Imported “${incoming.name}”`);
+        }).catch(() => options.notify('Could not read that JSON file'));
+      });
+      input.click();
+    }
+  });
+  get('plenumPanel').addEventListener('click', (event) => {
+    const target = event.target as HTMLElement;
+    const add = target.closest<HTMLElement>('[data-add-port]')?.dataset.addPort;
+    if (add) { addPort(add === 'round' ? 'round' : 'rectangular'); return; }
+    const select = target.closest<HTMLElement>('[data-select-port]')?.dataset.selectPort;
+    if (select) { selectedPortId = select; render(); return; }
+    const del = target.closest<HTMLElement>('[data-delete-port]')?.dataset.deletePort;
+    if (del) { selectedPortId = null; updatePorts(plenumPorts().filter((p) => p.id !== del)); options.notify(`Outlet ${del} deleted`); }
+  });
+  const applyPlenumInput = (event: Event): void => {
+    const target = event.target as HTMLElement;
+    const bodyKey = target.closest<HTMLInputElement>('[data-plenum]')?.dataset.plenum;
+    if (bodyKey) {
+      const value = Number((target as HTMLInputElement).value);
+      if (Number.isFinite(value)) { (draft as unknown as Record<string, number>)[bodyKey] = value; scheduleRender(); }
+      return;
+    }
+    const field = target.closest<HTMLElement>('[data-port-field]')?.dataset.portField;
+    if (!field || !selectedPortId) return;
+    const ports = plenumPorts().map((p) => {
+      if (p.id !== selectedPortId) return p;
+      const raw = (target as HTMLInputElement | HTMLSelectElement).value;
+      if (field === 'name' || field === 'face' || field === 'shape') return { ...p, [field]: raw } as PlenumPort;
+      const value = Number(raw); return Number.isFinite(value) ? { ...p, [field]: value } as PlenumPort : p;
+    });
+    draft.plenumPorts = ports; scheduleRender();
+  };
+  get('plenumPanel').addEventListener('input', applyPlenumInput);
+  get('plenumPanel').addEventListener('change', applyPlenumInput);
+  get('builderSaveTemplate').addEventListener('click', () => {
+    readDraft();
+    const name = window.prompt('Personal template name:', draft.name); if (!name) return;
+    const description = window.prompt('Short description (optional):', '') ?? '';
+    const tags = (window.prompt('Tags, comma separated (optional):', '') ?? '').split(',').map((t) => t.trim()).filter(Boolean);
+    const time = timestamp();
+    options.saveTemplate?.({
+      id: newId(), name, description, tags, favourite: false,
+      sourceTemplateId: templateForPart(draft)?.id ?? draft.partType,
+      part: syncCustomPartAssembly(structuredClone(draft)), createdAt: time, updatedAt: time,
+    });
+    options.notify(`Saved “${name}” as a personal template`);
+  });
+  get('builderDuplicate').addEventListener('click', () => {
+    readDraft(); const time = timestamp();
+    draft = syncCustomPartAssembly({ ...structuredClone(draft), id: newId(), name: `${draft.name} copy`, createdAt: time, updatedAt: time });
+    editingExisting = false; writeDraft(); render(); options.notify('Duplicated as a new part — save it to create a separate record');
+  });
   get('dimensionEditorConfirm').addEventListener('click', confirmEditor); get('dimensionEditorCancel').addEventListener('click', closeEditor);
   get('builderCentreHorizontal').addEventListener('click', () => { inputs.horizontalOffsetMm.value = '0'; render(); }); get('builderCentreVertical').addEventListener('click', () => { inputs.verticalOffsetMm.value = '0'; render(); });
   get('builderSwapEnds').addEventListener('click', () => { readDraft(); draft = syncCustomPartAssembly(swapTransitionEnds(draft)); writeDraft(); render(); options.notify('Ends and port profiles swapped; offsets and outlet orientation reversed'); });
   get('builderLoadRectExample').addEventListener('click', () => { draft = rectangularExamplePart(); editingExisting = false; writeDraft(); render(); fitCamera(); options.notify('Rectangular offset-transition example loaded'); });
   get('builderLoadExample').addEventListener('click', () => { draft = examplePart(); editingExisting = false; writeDraft(); render(); fitCamera(); options.notify('Example transition loaded'); });
-  get('builderNew').addEventListener('click', () => { draft = blankPart(); editingExisting = false; writeDraft(); render(); fitCamera(); });
   get('builderFitCamera').addEventListener('click', () => fitCamera(camera.position.clone().sub(controls?.target ?? new THREE.Vector3())));
   get('builderResetCamera').addEventListener('click', () => fitCamera());
   get('builderCentreline').addEventListener('change', render);
   get('builderPdf').addEventListener('click', () => { readDraft(); const errors = validateCustomPart(draft); if (Object.keys(errors).length) { render(); options.notify('Correct the highlighted measurements before exporting'); return; } draft = syncCustomPartAssembly(draft); downloadCustomPartPdf(draft); options.notify('Two-page custom fitting PDF created'); });
   get('builderSave').addEventListener('click', () => { readDraft(); const errors = validateCustomPart(draft); if (Object.keys(errors).length) { render(); options.notify('Correct the highlighted measurements before saving'); return; } draft = syncCustomPartAssembly(draft); options.onSave(structuredClone(draft)); });
 
-  writeDraft(); render(); fitCamera();
+  writeDraft(); render(); fitCamera(); showLibrary();
   return {
-    load(part, existing = Boolean(part)) { draft = structuredClone(part ?? blankPart()); editingExisting = existing; writeDraft(); render(); window.setTimeout(() => fitCamera(), 0); },
-    setActive(value) { active = value; if (active) window.setTimeout(() => { resize(); fitCamera(); }, 0); },
+    load(part, existing = Boolean(part)) {
+      if (!part) { showLibrary(); return; }              // no part -> template library
+      draft = structuredClone(part); editingExisting = existing; selectedPortId = null;
+      writeDraft(); showEditor(); render(); window.setTimeout(() => fitCamera(), 0);
+    },
+    setActive(value) { active = value; if (active && mode === 'editor') window.setTimeout(() => { resize(); fitCamera(); }, 0); },
     dispose() { resizeObserver.disconnect(); disposeObject(); controls?.dispose(); renderer?.dispose(); },
   };
 }

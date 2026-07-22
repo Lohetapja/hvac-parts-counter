@@ -2,8 +2,8 @@ import { syncCustomPartAssembly } from './custom-part-assembly';
 import type { CustomPart } from './types';
 import type { ProjectData } from './types';
 
-export const STORAGE_KEY = 'hvac-parts-counter-project-v8';
-const LEGACY_KEYS = ['hvac-parts-counter-project-v7', 'hvac-parts-counter-project-v6', 'hvac-parts-counter-project-v5', 'hvac-parts-counter-project-v4', 'hvac-parts-counter-project-v3', 'hvac-parts-counter-project-v2'];
+export const STORAGE_KEY = 'hvac-parts-counter-project-v9';
+const LEGACY_KEYS = ['hvac-parts-counter-project-v8', 'hvac-parts-counter-project-v7', 'hvac-parts-counter-project-v6', 'hvac-parts-counter-project-v5', 'hvac-parts-counter-project-v4', 'hvac-parts-counter-project-v3', 'hvac-parts-counter-project-v2'];
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
@@ -64,7 +64,7 @@ function isLegacyCustomPart(value: unknown): value is Record<string, unknown> {
 function isCustomPart(value: unknown): boolean {
   const numericKeys = ['endAWidthMm', 'endAHeightMm', 'endADiameterMm', 'endBWidthMm', 'endBHeightMm', 'endBDiameterMm', 'lengthMm', 'horizontalOffsetMm', 'verticalOffsetMm', 'outletHorizontalAngleDeg', 'outletVerticalAngleDeg', 'outletRotationDeg', 'quantity', 'thicknessMm'];
   return isRecord(value) && ['id', 'name', 'system', 'material', 'notes', 'createdAt', 'updatedAt'].every((key) => isString(value[key]))
-    && ['rectangular-transition', 'rectangular-to-round-transition', 'round-to-rectangular-transition'].includes(String(value.partType))
+    && ['rectangular-transition', 'rectangular-to-round-transition', 'round-to-rectangular-transition', 'plenum-box'].includes(String(value.partType))
     && numericKeys.every((key) => isFiniteNumber(value[key])) && (value.partNumber === undefined || isString(value.partNumber))
     && (value.verificationStatus === 'suggested' || value.verificationStatus === 'verified') && isAssembly(value.assembly);
 }
@@ -123,7 +123,8 @@ function isDuctShape(value: Record<string, unknown>): boolean {
 }
 
 function isValidProject(value: unknown): value is ProjectData {
-  if (!isRecord(value) || value.version !== 8) return false;
+  if (!isRecord(value) || value.version !== 9) return false;
+  if (!Array.isArray(value.personalTemplates)) return false;
   if (!isDuctShape(value)) return false;
   const calibration = value.calibration;
   const drawing = value.drawing;
@@ -191,7 +192,7 @@ export function loadProject(): ProjectData | null {
   if (!raw) return null;
   try {
     const value: unknown = JSON.parse(raw);
-    if (isRecord(value) && typeof value.version === 'number' && value.version >= 2 && value.version <= 7) {
+    if (isRecord(value) && typeof value.version === 'number' && value.version >= 2 && value.version <= 8) {
       const legacyCustomParts = value.version < 5;
       const customParts = legacyCustomParts
         ? (Array.isArray(value.customParts) ? value.customParts.map(migrateCustomPart).filter((part): part is CustomPart => Boolean(part)) : [])
@@ -201,7 +202,8 @@ export function loadProject(): ProjectData | null {
       const carriedDuct = { ...defaults, ...pickDuctArrays(value) };
       const migrated: unknown = {
         ...value,
-        version: 8,
+        version: 9,
+        personalTemplates: Array.isArray(value.personalTemplates) ? value.personalTemplates : [],
         customParts,
         ...(value.version === 2 || value.version === 3 ? airflowDefaults() : {}),
         ...carriedDuct,

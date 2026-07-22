@@ -6,7 +6,40 @@ export type DuctShape = 'round' | 'rectangular';
 export type Tool = 'pan' | 'calibrate' | 'trace' | 'airflow' | 'axis' | 'label' | 'network-seed' | 'network-trace';
 export type VerificationStatus = 'suggested' | 'verified';
 export type PartSource = 'manual' | 'detected';
-export type CustomPartType = 'rectangular-transition' | 'rectangular-to-round-transition' | 'round-to-rectangular-transition';
+export type CustomPartType = 'rectangular-transition' | 'rectangular-to-round-transition' | 'round-to-rectangular-transition' | 'plenum-box';
+
+// --- Plenum family ---------------------------------------------------------
+export type PlenumFace = 'front' | 'back' | 'top' | 'bottom' | 'left' | 'right';
+export interface PlenumPort {
+  id: string;
+  name: string;
+  face: PlenumFace;
+  shape: PortProfile;
+  widthMm: number;
+  heightMm: number;
+  diameterMm: number;
+  /** Offset from the face centre, along the face's local horizontal/vertical axes. */
+  offsetHorizontalMm: number;
+  offsetVerticalMm: number;
+  projectionMm: number;
+  rotationDeg: number;
+  role: PortRole;
+  notes: string;
+}
+
+// --- Reusable personal template (not a project part) -----------------------
+export interface PersonalTemplate {
+  id: string;
+  name: string;
+  description: string;
+  sourceTemplateId: string;
+  tags: string[];
+  favourite: boolean;
+  /** Structured parameters only — never rendered screenshots or WebGL data. */
+  part: CustomPart;
+  createdAt: string;
+  updatedAt: string;
+}
 export type SegmentType = 'rectangular-straight' | 'round-straight' | 'rectangular-transition' | 'rectangular-to-round-transition' | 'round-to-rectangular-transition' | 'rectangular-offset' | 'rectangular-elbow' | 'plenum-box';
 export type PortProfile = 'rectangular' | 'round';
 export type PortRole = 'inlet' | 'outlet' | 'branch' | 'equipment';
@@ -138,6 +171,17 @@ export interface CustomPart {
   updatedAt: string;
   verificationStatus: VerificationStatus;
   assembly: CustomPartAssembly;
+  // --- Template-architecture additions (optional keeps old saves valid) ---
+  templateId?: string;
+  revision?: string;
+  tags?: string[];
+  favourite?: boolean;
+  /** Plenum body dimensions (plenum-box template only). */
+  bodyWidthMm?: number;
+  bodyHeightMm?: number;
+  bodyDepthMm?: number;
+  /** Plenum outlet/branch ports (plenum-box template only). */
+  plenumPorts?: PlenumPort[];
 }
 
 export type AirflowClassification = 'supply' | 'extract' | 'uncertain';
@@ -184,7 +228,7 @@ export interface AirflowVisibility {
 }
 
 export interface ProjectData {
-  version: 8;
+  version: 9;
   projectName: string;
   drawing: DrawingIdentity | null;
   page: number;
@@ -194,6 +238,8 @@ export interface ProjectData {
   routes: RouteItem[];
   parts: PartItem[];
   customParts: CustomPart[];
+  /** Reusable personal templates — do not enter the project material list. */
+  personalTemplates: PersonalTemplate[];
   airflowMarkers: AirflowMarker[];
   temporaryDuctAxes: TemporaryDuctAxis[];
   airflowVisibility: AirflowVisibility;

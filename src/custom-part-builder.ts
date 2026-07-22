@@ -355,7 +355,9 @@ export function initCustomPartBuilder(root: HTMLElement, options: BuilderOptions
       <label class="lock-row"><input type="checkbox" data-lock="hostFaceLocked" ${locks.hostFaceLocked ? 'checked' : ''}> Lock host face</label>
       <div class="lock-group"><span class="label">Dimensions</span>${dimensionKeys.map((k) => `<label class="lock-chip"><input type="checkbox" data-lock="dimensions.${k}" ${locks.dimensions[k] ? 'checked' : ''}> ${k.replace('Mm', '')}</label>`).join('')}</div>
       <div class="button-row"><button class="btn small" data-lock-action="lock-all">Lock all</button><button class="btn small" data-lock-action="unlock-all">Unlock all</button></div>
-      <div class="button-row"><button class="btn small" data-lock-action="position-only">Position only</button><button class="btn small" data-lock-action="dimensions-only">Dimensions only</button></div>`;
+      <div class="button-row"><button class="btn small" data-lock-action="position-only">Position only</button><button class="btn small" data-lock-action="dimensions-only">Dimensions only</button></div>
+      <div class="button-row"><button class="btn small" data-lock-action="assembly-root">Make assembly root</button></div>
+      <p class="help">The assembly root is the grounded component. Connected parts are regenerated outward from it; multi-part assembly editing arrives in a later phase.</p>`;
   }
 
   // Full HVAC catalogue. Planned entries are shown but cannot be opened.
@@ -440,6 +442,7 @@ export function initCustomPartBuilder(root: HTMLElement, options: BuilderOptions
           <label class="field"><span class="label">Rotation (°)</span><input class="input" type="number" inputmode="numeric" data-port-field="rotationDeg" value="${selected.rotationDeg}"></label>
         </div>
         <label class="field"><span class="label">Branch angle (°)</span><input class="input" type="number" min="45" max="135" data-port-field="branchAngleDeg" value="${selected.branchAngleDeg ?? 90}"><span class="help">90° is perpendicular to the host duct.</span></label>
+        <label class="lock-row"><input type="checkbox" data-port-lock="${selected.id}" ${selected.locks && (selected.locks.grounded || selected.locks.position.x) ? 'checked' : ''}> 📌 Lock this port on its host face</label>
         <div class="button-row"><button class="btn small ghost danger" data-delete-port="${selected.id}">Delete outlet</button></div>
       </fieldset>` : ''}
       ${(() => { const all = [...geometry.warnings, ...plenumLockWarnings(draft)]; return all.length ? `<div class="callout">${all.map((w) => htmlEscape(w)).join('<br>')}</div>` : ''; })()}
@@ -699,6 +702,16 @@ export function initCustomPartBuilder(root: HTMLElement, options: BuilderOptions
     const pick = target.closest<HTMLElement>('[data-lock-target]')?.dataset.lockTarget;
     if (pick) { lockTarget = pick as LockTarget; renderLockPanel(); return; }
     const action = target.closest<HTMLElement>('[data-lock-action]')?.dataset.lockAction;
+    if (action === 'assembly-root') {
+      // The assembly root is the grounded component the constraint solver builds outward from.
+      (['body', 'portA', 'portB'] as LockTarget[]).forEach((t) => {
+        const locks = lockStateFor(draft, t);
+        draft = withLockState(draft, t, { ...locks, grounded: t === lockTarget });
+      });
+      lastValidDraft = structuredClone(draft); renderLockPanel(); render();
+      options.notify(`${lockTarget} is now the assembly root (grounded)`);
+      return;
+    }
     if (action) {
       draft = withLockState(draft, lockTarget, quickAction(lockStateFor(draft, lockTarget), action as 'lock-all'));
       lastValidDraft = structuredClone(draft); renderLockPanel(); render();
@@ -738,11 +751,32 @@ export function initCustomPartBuilder(root: HTMLElement, options: BuilderOptions
     if (add) { addPort(add === 'round' ? 'round' : 'rectangular'); return; }
     const select = target.closest<HTMLElement>('[data-select-port]')?.dataset.selectPort;
     if (select) { selectedPortId = select; render(); return; }
+    const portLock = target.closest<HTMLInputElement>('[data-port-lock]')?.dataset.portLock;
+    if (portLock) {
+      const on = (target as HTMLInputElement).checked;
+      updatePorts(plenumPorts().map((p) => p.id !== portLock ? p : {
+        ...p,
+        locks: { ...(p.locks ?? emptyLockState()), grounded: on, position: { x: on, y: on, z: on }, hostFaceLocked: on },
+      }));
+      options.notify(on ? `Port ${portLock} locked to its host face` : `Port ${portLock} unlocked`);
+      return;
+    }
     const del = target.closest<HTMLElement>('[data-delete-port]')?.dataset.deletePort;
     if (del) { selectedPortId = null; updatePorts(plenumPorts().filter((p) => p.id !== del)); options.notify(`Outlet ${del} deleted`); }
   });
   const applyPlenumInput = (event: Event): void => {
     const target = event.target as HTMLElement;
+    // Port lock toggles must work from click, keyboard and assistive input alike.
+    const lockToggle = target.closest<HTMLInputElement>('[data-port-lock]');
+    if (lockToggle) {
+      const id = lockToggle.dataset.portLock ?? ''; const on = lockToggle.checked;
+      updatePorts(plenumPorts().map((p) => p.id !== id ? p : {
+        ...p,
+        locks: { ...(p.locks ?? emptyLockState()), grounded: on, position: { x: on, y: on, z: on }, hostFaceLocked: on },
+      }));
+      options.notify(on ? `Port ${id} locked to its host face` : `Port ${id} unlocked`);
+      return;
+    }
     const bodyKey = target.closest<HTMLInputElement>('[data-plenum]')?.dataset.plenum;
     if (bodyKey) {
       const value = Number((target as HTMLInputElement).value);

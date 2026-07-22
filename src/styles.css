@@ -139,7 +139,10 @@ button, input, select, textarea { font: inherit; } button { cursor: pointer; }
   .tpl-grid { grid-template-columns: 1fr; }
   .tpl-family-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }
   .visual-audit-views { grid-template-columns: repeat(2,minmax(0,1fr)); }
-  .tpl-card .btn, .tpl-card .button-row .btn, .plenum-panel .btn, .builder-controls .btn { min-height: 44px; }
+  .tpl-card .btn, .tpl-card .button-row .btn, .plenum-panel .btn, .builder-controls .btn, .lock-panel .btn { min-height: 44px; }
+  /* Lock toggles stay tappable on touch devices. */
+  .lock-panel .lock-row, .lock-panel .lock-chip, .lock-panel .duct-chip { min-height: 44px; display: flex; align-items: center; }
+  .lock-panel input[type="checkbox"] { width: 20px; height: 20px; }
   .tpl-search { min-width: 0; width: 100%; }
   .builder-shell { grid-template-columns: 1fr; }
   .builder-3d { height: 280px; }

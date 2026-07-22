@@ -9,7 +9,7 @@ export function outletDirection(horizontalDeg: number, verticalDeg: number): Vec
 }
 
 export function profileForEnd(part: CustomPart, end: 'a' | 'b'): PortProfile {
-  if (part.partType === 'round-transition') return 'round';
+  if (part.partType === 'round-transition' || part.partType === 'round-elbow') return 'round';
   if (part.partType === 'rectangular-to-round-transition') return end === 'a' ? 'rectangular' : 'round';
   if (part.partType === 'round-to-rectangular-transition') return end === 'a' ? 'round' : 'rectangular';
   return 'rectangular';
@@ -17,8 +17,9 @@ export function profileForEnd(part: CustomPart, end: 'a' | 'b'): PortProfile {
 
 function port(part: CustomPart, end: 'a' | 'b'): ConnectionPort {
   const profile = profileForEnd(part, end); const isA = end === 'a';
-  const position = isA ? { x: 0, y: 0, z: 0 } : { x: part.horizontalOffsetMm, y: part.verticalOffsetMm, z: part.lengthMm };
-  const direction = isA ? { x: 0, y: 0, z: -1 } : outletDirection(part.outletHorizontalAngleDeg, part.outletVerticalAngleDeg);
+  const elbow = part.partType === 'rectangular-elbow' || part.partType === 'round-elbow'; const angle = (part.bendAngleDeg ?? 90) * Math.PI / 180; const radius = part.bendRadiusMm ?? part.lengthMm; const inlet = part.inletExtensionMm ?? 120; const outlet = part.outletExtensionMm ?? 120;
+  const position = elbow ? (isA ? { x: 0, y: 0, z: -inlet } : { x: radius * (1 - Math.cos(angle)) + Math.sin(angle) * outlet, y: 0, z: radius * Math.sin(angle) + Math.cos(angle) * outlet }) : (isA ? { x: 0, y: 0, z: 0 } : { x: part.horizontalOffsetMm, y: part.verticalOffsetMm, z: part.lengthMm });
+  const direction = isA ? { x: 0, y: 0, z: -1 } : elbow ? { x: Math.sin(angle), y: 0, z: Math.cos(angle) } : outletDirection(part.outletHorizontalAngleDeg, part.outletVerticalAngleDeg);
   return {
     id: `${part.id}-${isA ? 'P1' : 'P2'}`, profile, position, direction,
     rotationDeg: isA ? 0 : part.outletRotationDeg, role: isA ? 'inlet' : 'outlet',

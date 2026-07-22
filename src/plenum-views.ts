@@ -33,10 +33,11 @@ function renderView(part: CustomPart, view: View, showDimensions: boolean): stri
   const pad = Math.max(60, (maxX - minX) * 0.12);
   const vb = `${(minX - pad).toFixed(1)} ${(minY - pad).toFixed(1)} ${(maxX - minX + pad * 2).toFixed(1)} ${(maxY - minY + pad * 2).toFixed(1)}`;
 
-  // Body outline for this view (axis-aligned box projection).
+  // Body edges for this view, projected from the same eight 3D corners.
   const bx = [Math.min(...pts.map((p) => p.x)), Math.max(...pts.map((p) => p.x))];
   const by = [Math.min(...pts.map((p) => p.y)), Math.max(...pts.map((p) => p.y))];
-  let svg = `<rect class="profile" x="${bx[0]}" y="${by[0]}" width="${bx[1] - bx[0]}" height="${by[1] - by[0]}"/>`;
+  const edgeKeys = new Set<string>(); let svg = '';
+  geometry.boxFaces.forEach((face) => face.forEach((index, position) => { const next = face[(position + 1) % face.length]; const key = index < next ? `${index}:${next}` : `${next}:${index}`; if (edgeKeys.has(key)) return; edgeKeys.add(key); const a = pts[index]; const b = pts[next]; svg += `<line class="body-edge" x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}"/>`; }));
 
   // Port footprints + projected connector outlines, labelled with their identifiers.
   const drawPort = (outline: Vector3[], ring: Vector3[], centre: Vector3, id: string, cls: string, locked: boolean): void => {

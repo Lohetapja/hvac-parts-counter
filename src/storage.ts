@@ -64,7 +64,7 @@ function isLegacyCustomPart(value: unknown): value is Record<string, unknown> {
 function isCustomPart(value: unknown): boolean {
   const numericKeys = ['endAWidthMm', 'endAHeightMm', 'endADiameterMm', 'endBWidthMm', 'endBHeightMm', 'endBDiameterMm', 'lengthMm', 'horizontalOffsetMm', 'verticalOffsetMm', 'outletHorizontalAngleDeg', 'outletVerticalAngleDeg', 'outletRotationDeg', 'quantity', 'thicknessMm'];
   return isRecord(value) && ['id', 'name', 'system', 'material', 'notes', 'createdAt', 'updatedAt'].every((key) => isString(value[key]))
-    && ['rectangular-transition', 'rectangular-to-round-transition', 'round-to-rectangular-transition', 'plenum-box'].includes(String(value.partType))
+    && ['rectangular-transition', 'round-transition', 'rectangular-to-round-transition', 'round-to-rectangular-transition', 'rectangular-elbow', 'round-elbow', 'plenum-box'].includes(String(value.partType))
     && numericKeys.every((key) => isFiniteNumber(value[key])) && (value.partNumber === undefined || isString(value.partNumber))
     && (value.verificationStatus === 'suggested' || value.verificationStatus === 'verified') && isAssembly(value.assembly);
 }

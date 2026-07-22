@@ -10,6 +10,8 @@ export interface TransitionGeometry {
   centrelineLengthMm: number;
   cornerEdgeLengthsMm: [number, number, number, number];
   surfaceAreaM2: number;
+  /** Optional swept centreline used by elbows and future curved families. */
+  centreline?: Vertex3[];
 }
 
 export type ValidationErrors = Partial<Record<keyof CustomPart, string>>;
@@ -43,6 +45,11 @@ export function validateCustomPart(part: CustomPart): ValidationErrors {
   (['outletHorizontalAngleDeg', 'outletVerticalAngleDeg'] as const).forEach((key) => {
     const value = part[key]; if (!Number.isFinite(value) || Math.abs(value) > 85) errors[key] = 'Enter an outlet angle from −85° to 85°.';
   });
+  if (part.partType === 'rectangular-elbow' || part.partType === 'round-elbow') {
+    const radius = part.bendRadiusMm ?? part.lengthMm; const angle = part.bendAngleDeg ?? 90;
+    if (!Number.isFinite(radius) || radius <= 0 || radius > MAX_DIMENSION_MM) errors.bendRadiusMm = 'Enter a valid bend radius.';
+    if (!Number.isFinite(angle) || angle < 15 || angle > 135) errors.bendAngleDeg = 'Enter a bend angle from 15° to 135°.';
+  }
   if (!Number.isFinite(part.outletRotationDeg) || Math.abs(part.outletRotationDeg) > 180) errors.outletRotationDeg = 'Enter a rotation from −180° to 180°.';
   if (!Number.isFinite(part.quantity) || !Number.isInteger(part.quantity) || part.quantity < 1) errors.quantity = 'Quantity must be a whole number of at least one.';
   else if (part.quantity > 10_000) errors.quantity = 'Maximum quantity is 10,000.';

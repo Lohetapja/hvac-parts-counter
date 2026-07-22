@@ -6,7 +6,7 @@ export type DuctShape = 'round' | 'rectangular';
 export type Tool = 'pan' | 'calibrate' | 'trace' | 'airflow' | 'axis' | 'label' | 'network-seed' | 'network-trace';
 export type VerificationStatus = 'suggested' | 'verified';
 export type PartSource = 'manual' | 'detected';
-export type CustomPartType = 'rectangular-transition' | 'round-transition' | 'rectangular-to-round-transition' | 'round-to-rectangular-transition' | 'plenum-box';
+export type CustomPartType = 'rectangular-transition' | 'round-transition' | 'rectangular-to-round-transition' | 'round-to-rectangular-transition' | 'rectangular-elbow' | 'round-elbow' | 'plenum-box';
 
 // --- Locking / grounding ---------------------------------------------------
 export interface AxisLock { x: boolean; y: boolean; z: boolean }
@@ -49,6 +49,8 @@ export interface PlenumPort {
   offsetVerticalMm: number;
   projectionMm: number;
   rotationDeg: number;
+  /** Branch angle relative to the main duct axis; 90° is perpendicular. */
+  branchAngleDeg?: number;
   role: PortRole;
   notes: string;
   /** Absent on parts created before locking existed (treated as fully unlocked). */
@@ -68,7 +70,7 @@ export interface PersonalTemplate {
   createdAt: string;
   updatedAt: string;
 }
-export type SegmentType = 'rectangular-straight' | 'round-straight' | 'rectangular-transition' | 'round-transition' | 'rectangular-to-round-transition' | 'round-to-rectangular-transition' | 'rectangular-offset' | 'rectangular-elbow' | 'plenum-box';
+export type SegmentType = 'rectangular-straight' | 'round-straight' | 'rectangular-transition' | 'round-transition' | 'rectangular-to-round-transition' | 'round-to-rectangular-transition' | 'rectangular-offset' | 'rectangular-elbow' | 'round-elbow' | 'plenum-box';
 export type PortProfile = 'rectangular' | 'round';
 export type PortRole = 'inlet' | 'outlet' | 'branch' | 'equipment';
 export interface Vector3 { x: number; y: number; z: number }
@@ -204,6 +206,13 @@ export interface CustomPart {
   revision?: string;
   tags?: string[];
   favourite?: boolean;
+  /** Family preset and swept-elbow parameters. Millimetres/degrees. */
+  presetId?: string;
+  bendRadiusMm?: number;
+  bendAngleDeg?: number;
+  inletExtensionMm?: number;
+  outletExtensionMm?: number;
+  segmentCount?: number;
   /** Plenum body dimensions (plenum-box template only). */
   bodyWidthMm?: number;
   bodyHeightMm?: number;

@@ -51,6 +51,7 @@ function faceFrame(face: PlenumFace, w: number, h: number, d: number): { origin:
 
 const add = (a: Vector3, b: Vector3): Vector3 => ({ x: a.x + b.x, y: a.y + b.y, z: a.z + b.z });
 const scale = (a: Vector3, k: number): Vector3 => ({ x: a.x * k, y: a.y * k, z: a.z * k });
+const normalize = (value: Vector3): Vector3 => { const length = Math.hypot(value.x, value.y, value.z) || 1; return scale(value, 1 / length); };
 
 function portOutline(port: PlenumPort, points = 24): Array<{ u: number; v: number }> {
   const rotation = (port.rotationDeg ?? 0) * Math.PI / 180;
@@ -129,9 +130,11 @@ function buildPort(port: PlenumPort, width: number, height: number, depth: numbe
   }
   const centre = add(frame.origin, add(scale(frame.u, port.offsetHorizontalMm), scale(frame.v, port.offsetVerticalMm)));
   const outline = portOutline(port).map((p) => add(centre, add(scale(frame.u, p.u), scale(frame.v, p.v))));
-  const tipCentre = add(centre, scale(frame.n, Math.max(0, port.projectionMm)));
+  const tilt = (90 - Math.min(135, Math.max(45, port.branchAngleDeg ?? 90))) * Math.PI / 180;
+  const direction = normalize(add(scale(frame.n, Math.cos(tilt)), scale(frame.u, Math.sin(tilt))));
+  const tipCentre = add(centre, scale(direction, Math.max(0, port.projectionMm)));
   const outerRing = portOutline(port).map((p) => add(tipCentre, add(scale(frame.u, p.u), scale(frame.v, p.v))));
-  return { port, outline, outerRing, centre, normal: frame.n, tip: tipCentre };
+  return { port, outline, outerRing, centre, normal: direction, tip: tipCentre };
 }
 
 export function nextPortId(ports: PlenumPort[]): string {

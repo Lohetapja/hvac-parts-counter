@@ -1,6 +1,7 @@
 import { buildTransitionGeometry } from './transition-geometry';
 import { projectVertex, type Projection } from './transition-views';
 import { buildPlenumGeometry, portSizeLabel } from './plenum-geometry';
+import { buildElbowGeometry } from './elbow-geometry';
 import type { CustomPart } from './types';
 
 function ascii(value: string): string {
@@ -10,21 +11,21 @@ function pdfText(value: string): string { return ascii(value).replaceAll('\\', '
 function text(x: number, y: number, value: string, size = 9, bold = false): string { return `BT /${bold ? 'F2' : 'F1'} ${size} Tf ${x.toFixed(1)} ${y.toFixed(1)} Td (${pdfText(value)}) Tj ET\n`; }
 function line(x1: number, y1: number, x2: number, y2: number, width = .7): string { return `${width} w ${x1.toFixed(1)} ${y1.toFixed(1)} m ${x2.toFixed(1)} ${y2.toFixed(1)} l S\n`; }
 function profileLabel(part: CustomPart, end: 'a' | 'b'): string {
-  const round = part.partType === 'round-transition' || (end === 'a' ? part.partType === 'round-to-rectangular-transition' : part.partType === 'rectangular-to-round-transition');
+  const round = part.partType === 'round-transition' || part.partType === 'round-elbow' || (end === 'a' ? part.partType === 'round-to-rectangular-transition' : part.partType === 'rectangular-to-round-transition');
   return round ? `DIA ${end === 'a' ? part.endADiameterMm : part.endBDiameterMm} mm` : `${end === 'a' ? part.endAWidthMm : part.endBWidthMm} x ${end === 'a' ? part.endAHeightMm : part.endBHeightMm} mm`;
 }
 
 function drawing(part: CustomPart, projection: Projection, x: number, y: number, width: number, height: number): string {
   if (part.partType === 'plenum-box') return plenumDrawing(part, projection, x, y, width, height);
-  const geometry = buildTransitionGeometry(part); const points = geometry.vertices.map((vertex) => projectVertex(vertex, projection));
+  const geometry = part.partType === 'rectangular-elbow' || part.partType === 'round-elbow' ? buildElbowGeometry(part) : buildTransitionGeometry(part); const points = geometry.vertices.map((vertex) => projectVertex(vertex, projection));
   const xs = points.map((point) => point.x); const ys = points.map((point) => point.y); const minX = Math.min(...xs); const maxX = Math.max(...xs); const minY = Math.min(...ys); const maxY = Math.max(...ys);
   const availableWidth = width - 24; const availableHeight = height - 35; const scale = Math.min(availableWidth / Math.max(1, maxX - minX), availableHeight / Math.max(1, maxY - minY));
   const usedWidth = (maxX - minX) * scale; const usedHeight = (maxY - minY) * scale; const originX = x + 12 + (availableWidth - usedWidth) / 2; const originY = y + 10 + (availableHeight - usedHeight) / 2;
   const map = (point: { x: number; y: number }): { x: number; y: number } => ({ x: originX + (point.x - minX) * scale, y: originY + (maxY - point.y) * scale });
   let commands = text(x, y + height - 11, projection.toUpperCase(), 8, true) + line(x, y, x + width, y) + line(x + width, y, x + width, y + height) + line(x + width, y + height, x, y + height) + line(x, y + height, x, y);
   geometry.endRings.forEach((ring) => ring.forEach((index, ringIndex) => { const a = map(points[index]); const b = map(points[ring[(ringIndex + 1) % ring.length]]); commands += line(a.x, a.y, b.x, b.y, .8); }));
-  [0, 6, 12, 18].forEach((index) => { const a = map(points[geometry.endRings[0][index]]); const b = map(points[geometry.endRings[1][index]]); commands += line(a.x, a.y, b.x, b.y, .55); });
-  const p1 = map(projectVertex({ x: 0, y: 0, z: 0 }, projection)); const p2 = map(projectVertex({ x: part.horizontalOffsetMm, y: part.verticalOffsetMm, z: part.lengthMm }, projection));
+  const edgeKeys = new Set<string>(); geometry.sideFaces.forEach((face) => face.forEach((index, position) => { const next = face[(position + 1) % face.length]; const key = index < next ? `${index}:${next}` : `${next}:${index}`; if (!edgeKeys.has(key)) { edgeKeys.add(key); const a = map(points[index]); const b = map(points[next]); commands += line(a.x, a.y, b.x, b.y, .45); } }));
+  const p1 = map(projectVertex(geometry.ports[0].position, projection)); const p2 = map(projectVertex(geometry.ports[1].position, projection));
   commands += text(p1.x + 3, p1.y + 3, 'P1', 7, true) + text(p2.x + 3, p2.y + 3, 'P2', 7, true); return commands;
 }
 
@@ -41,10 +42,11 @@ function plenumDrawing(part: CustomPart, projection: Projection, x: number, y: n
 }
 
 function firstPage(part: CustomPart): string {
+  const elbow = part.partType === 'rectangular-elbow' || part.partType === 'round-elbow';
   let page = text(36, 565, `CUSTOM HVAC FITTING - ${part.name}`, 15, true);
   page += text(36, 547, `Project: HVAC Parts Counter   Part no: ${part.partNumber || '-'}   Rev: ${part.revision || 'A'}   Qty: ${part.quantity}`, 9);
-  page += part.partType === 'plenum-box' ? text(36, 532, `Body ${part.bodyWidthMm} x ${part.bodyHeightMm} x ${part.bodyDepthMm} mm   Inlet ${profileLabel(part, 'a')}   Outlets ${part.plenumPorts?.length ?? 0}`, 9) : text(36, 532, `P1 ${profileLabel(part, 'a')}   P2 ${profileLabel(part, 'b')}   Length ${part.lengthMm} mm`, 9);
-  page += part.partType === 'plenum-box' ? text(36, 517, 'Parametric plenum body and connector projections shown to fit.', 8) : text(36, 517, `Offsets X ${part.horizontalOffsetMm} mm / Y ${part.verticalOffsetMm} mm   Outlet H ${part.outletHorizontalAngleDeg} deg / V ${part.outletVerticalAngleDeg} deg / rotation ${part.outletRotationDeg} deg`, 8);
+  page += part.partType === 'plenum-box' ? text(36, 532, `Body ${part.bodyWidthMm} x ${part.bodyHeightMm} x ${part.bodyDepthMm} mm   Inlet ${profileLabel(part, 'a')}   Outlets ${part.plenumPorts?.length ?? 0}`, 9) : text(36, 532, `P1 ${profileLabel(part, 'a')}   P2 ${profileLabel(part, 'b')}   ${elbow ? `Radius ${part.bendRadiusMm} mm / angle ${part.bendAngleDeg} deg` : `Length ${part.lengthMm} mm`}`, 9);
+  page += part.partType === 'plenum-box' ? text(36, 517, 'Parametric host body and connector projections shown to fit.', 8) : elbow ? text(36, 517, `Inlet extension ${part.inletExtensionMm} mm / outlet extension ${part.outletExtensionMm} mm / sweep segments ${part.segmentCount}`, 8) : text(36, 517, `Offsets X ${part.horizontalOffsetMm} mm / Y ${part.verticalOffsetMm} mm   Outlet H ${part.outletHorizontalAngleDeg} deg / V ${part.outletVerticalAngleDeg} deg / rotation ${part.outletRotationDeg} deg`, 8);
   page += drawing(part, 'isometric', 36, 250, 770, 250) + drawing(part, 'front', 36, 48, 246, 182) + drawing(part, 'top', 298, 48, 246, 182) + drawing(part, 'side', 560, 48, 246, 182);
   page += text(36, 25, 'GEOMETRIC REFERENCE - VERIFY DIMENSIONS BEFORE FABRICATION.', 8, true); return page;
 }

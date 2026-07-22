@@ -386,19 +386,24 @@ async function loadPdf(file: File): Promise<void> {
     els.pageSelect.replaceChildren(...Array.from({ length: pdfDoc.numPages }, (_, index) => new Option(`Page ${index + 1}`, String(index + 1))));
     els.pageSelect.value = String(requestedPage); els.pageSelect.disabled = pdfDoc.numPages <= 1;
     els.canvasStage.classList.remove('empty'); els.emptyState.hidden = true; els.scanBtn.disabled = false;
-    await openPage(requestedPage, true);
-    markChanged(); toast(`Loaded ${file.name}`); status(`Loaded ${file.name} — ${pdfDoc.numPages} page${pdfDoc.numPages === 1 ? '' : 's'}.`);
+    await openPage(requestedPage, true, false);
+    markChanged(); toast(`Loaded ${file.name}`); status(`Loaded ${file.name} — ${pdfDoc.numPages} page${pdfDoc.numPages === 1 ? '' : 's'}. Rendering continues in the background; you can scan now.`);
   } catch (error) {
     console.error(error); pdfDoc = null; pdfPage = null; els.scanBtn.disabled = true;
     status('PDF loading failed. The file may be damaged, encrypted, or unsupported.'); toast('Could not load this PDF');
   } finally { loading(false); }
 }
-async function openPage(pageNumber: number, fit = false): Promise<void> {
+// waitForRender=false lets the page become scannable as soon as the PDF page object
+// exists. Large-format drawings (4167x2544, ~20k operators) take a long time to
+// rasterise, and geometry analysis reads the operator list, not the canvas.
+async function openPage(pageNumber: number, fit = false, waitForRender = true): Promise<void> {
   if (!pdfDoc) return;
   pdfPage = await pdfDoc.getPage(pageNumber); project.page = pageNumber;
   const viewport = pdfPage.getViewport({ scale: 1 }); basePageWidth = viewport.width; basePageHeight = viewport.height;
   detections = []; labelLocations = []; selectedLabelModel = null; renderDetections();
-  if (fit) await fitAndRender(); else await renderPage();
+  const rendering = fit ? fitAndRender() : renderPage();
+  if (waitForRender) await rendering;
+  else void rendering.catch((error: unknown) => console.warn('Background page render failed', error));
 }
 async function fitAndRender(): Promise<void> {
   if (!pdfPage) return;
@@ -936,13 +941,11 @@ async function runScan(): Promise<void> {
     await ensurePageGeometry();
     const segments = (pageSegments.get(project.page) ?? []).map((segment) => ({ start: segment.start, end: segment.end }));
     await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
-    status('Scan D/F — building networks and classifying systems…');
-    const result = scanDrawing({ page: project.page, fileName: project.drawing?.fileName ?? 'drawing.pdf', pageWidth: viewport.width, pageHeight: viewport.height, textItems, segments, mmPerPdfPoint: project.calibration.mmPerPdfPoint });
-
-    // Convert candidate points from PDF space to canvas (overlay) space.
+    status('Scan D/F — pairing duct edges, building duct bodies and classifying systems…');
+    // One shared coordinate space: labels are converted to overlay/viewport space up
+    // front so detected duct polygons align with the cached vector geometry.
     const toViewport = (point: Point): Point => { const [vx, vy] = viewport.convertToViewportPoint(point.x, point.y); return { x: vx, y: vy }; };
-    result.nodes.forEach((node) => { node.point = toViewport(node.point); });
-    result.boundaries.forEach((boundary) => { boundary.point = toViewport(boundary.point); });
+    const result = scanDrawing({ page: project.page, fileName: project.drawing?.fileName ?? 'drawing.pdf', pageWidth: viewport.width, pageHeight: viewport.height, textItems, segments, mmPerPdfPoint: project.calibration.mmPerPdfPoint, toViewport });
 
     // Replace any previous scan-sourced networks on this page.
     project.ductNetworks.filter((network) => network.pageNumber === project.page && network.source === 'assisted-vector' && network.notes.startsWith('Auto-scanned')).map((network) => network.id).forEach((id) => removeNetwork(project, id));

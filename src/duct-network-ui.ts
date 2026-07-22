@@ -12,6 +12,7 @@ import { createDemoDuctNetwork } from './duct-fixture';
 import { profileFromSizeText } from './duct-labels';
 import { catalogueName, mergedCatalogue } from './duct-catalogue';
 import { partThumbnail } from './part-thumbnails';
+import { polygonContains } from './duct-geometry';
 import type { ScanMetadata } from './duct-network-types';
 
 export interface DuctNetworkContext {
@@ -643,6 +644,26 @@ export function initDuctNetworkUi(context: DuctNetworkContext): DuctNetworkContr
       const points = segment.centrelinePoints; if (points.length < 2) return;
       const outOfScope = excluded.has(segment.id);
       const suggested = segment.verificationStatus === 'suggested' && !verified;
+
+      // Real detected duct body: fill the closed footprint polygon built from the
+      // paired duct edges. This is the true pipe body, not a synthetic band.
+      if (segment.footprint && segment.footprint.length >= 3) {
+        const poly = segment.footprint;
+        context2d.save();
+        context2d.beginPath();
+        poly.forEach((p, i) => i ? context2d.lineTo(p.x * renderScale, p.y * renderScale) : context2d.moveTo(p.x * renderScale, p.y * renderScale));
+        context2d.closePath();
+        context2d.globalAlpha = dim ? 0.12 : outOfScope ? 0.14 : selected ? 0.55 : verified ? 0.48 : 0.38;
+        context2d.fillStyle = color; context2d.fill();
+        context2d.globalAlpha = dim ? 0.2 : 0.95;
+        context2d.strokeStyle = outOfScope ? '#9aa7b5' : selected ? '#ffffff' : color;
+        context2d.lineWidth = selected ? 2.2 : 1.4;
+        context2d.setLineDash(suggested && !verified ? [6, 4] : []);
+        context2d.stroke();
+        context2d.restore();
+        return;
+      }
+
       const bandPx = Math.max(6, bandHalfWidthCanvas(segment.profile, mmPerPt) * 2 * renderScale);
       const path = (): void => { context2d.beginPath(); points.forEach((point, index) => index ? context2d.lineTo(point.x * renderScale, point.y * renderScale) : context2d.moveTo(point.x * renderScale, point.y * renderScale)); };
       context2d.save(); context2d.lineJoin = 'round'; context2d.lineCap = 'round'; context2d.setLineDash([]);
@@ -723,6 +744,8 @@ export function initDuctNetworkUi(context: DuctNetworkContext): DuctNetworkContr
     // Body hit-test: clicking anywhere inside the filled duct band selects the whole network.
     const mmPerPt = context.getMmPerPdfPoint();
     const segment = project().ductSegments.filter((item) => item.pageNumber === page).find((item) => {
+      // Real detected duct bodies use point-in-polygon on the footprint.
+      if (item.footprint && item.footprint.length >= 3 && polygonContains(item.footprint, point)) return true;
       if (item.centrelinePoints.length < 2) return false;
       const half = bandHalfWidthCanvas(item.profile, mmPerPt);
       return distanceToPolyline(point, item.centrelinePoints) <= Math.max(threshold, half);

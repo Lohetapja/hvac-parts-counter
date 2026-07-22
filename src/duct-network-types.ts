@@ -57,6 +57,10 @@ export interface DuctSegment {
   pageNumber: number;
   networkId?: string;
   profile?: DuctProfile;
+  // Closed duct-body footprint polygon in PDF space, built from paired duct edges.
+  // When present the overlay fills this polygon instead of stroking a synthetic band.
+  footprint?: Point[];
+  confidence?: number;
   centrelinePoints: Point[];
   lengthMm: number;
   source: DuctSegmentSource;

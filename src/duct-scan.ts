@@ -6,6 +6,7 @@ import type {
 import { parseDuctLabel, normalizeLabelText } from './duct-labels';
 import { extractTitleBlock, type PositionedText } from './title-block';
 import { uid } from './duct-network';
+import { detectDuctSections, type DuctLabelAnchor, type GeomSegment } from './duct-geometry';
 
 // Local, staged drawing scan. No OCR, no backend, no AI. Candidate components are
 // derived from embedded PDF text labels + cached vector-symbol evidence and grouped
@@ -15,6 +16,9 @@ export interface ScanLine { start: Point; end: Point; }
 export interface ScanInput {
   page: number; fileName: string; pageWidth: number; pageHeight: number;
   textItems: PositionedText[]; segments: ScanLine[]; mmPerPdfPoint: number;
+  // Converts raw PDF text coordinates (Y up) into viewport/overlay space (Y down),
+  // so labels, detected duct polygons and cached vector geometry share one space.
+  toViewport: (point: Point) => Point;
 }
 export interface ScanOutput {
   metadata: ScanMetadata; summary: ScanSummary; diagnostics: ScanDiagnostics;
@@ -143,11 +147,15 @@ export function scanDrawing(input: ScanInput): ScanOutput {
   const diagnosticsLabels: ScanDiagnostics['labels'] = [];
   const unresolvedReasons = new Set<string>();
   let partCandidates = 0;
+  // Round duct-size labels double as geometry anchors for duct-body detection.
+  const ductAnchors: Array<DuctLabelAnchor & { networkId: string }> = [];
+  // Classified terminals (KTS = supply, KSO = extract) classify nearby duct bodies.
+  const terminalAnchors: Array<{ x: number; y: number; system: 'supply' | 'extract' }> = [];
 
   input.textItems.forEach((item) => {
     const recognition = recognize(item.text);
     if (!recognition) return;
-    const point: Point = { x: item.x, y: item.y };
+    const point: Point = input.toViewport({ x: item.x, y: item.y });
     diagnosticsLabels.push({ raw: item.text, normalized: recognition.label, kind: recognition.kind, x: point.x, y: point.y });
 
     if (recognition.kind === 'ur') {
@@ -158,6 +166,12 @@ export function scanDrawing(input: ScanInput): ScanOutput {
 
     const inferred = inferSystem(recognition.system, point, input.segments);
     const network = networkFor(inferred.system);
+    if (recognition.kind === 'round-size' && recognition.profile?.shape === 'round') {
+      ductAnchors.push({ x: point.x, y: point.y, diameterMm: recognition.profile.diameterMm, raw: recognition.label, networkId: network.id });
+    }
+    if (recognition.kind === 'terminal' && (inferred.system === 'supply' || inferred.system === 'extract')) {
+      terminalAnchors.push({ x: point.x, y: point.y, system: inferred.system });
+    }
     const ambiguous = inferred.system === 'unknown' && (recognition.kind === 'round-size' || recognition.kind === 'rect-size' || recognition.kind === 'terminal');
     const confidence = Math.min(0.95, recognition.confidence + inferred.confidence);
     const reviewStatus = reviewFromConfidence(confidence, ambiguous);
@@ -179,10 +193,49 @@ export function scanDrawing(input: ScanInput): ScanOutput {
     }
   });
 
-  const networks = [tulo, poisto, unknown].filter((network) => network.nodeIds.length);
+  // --- Stage D/E: real duct-body detection from paired PDF vector edges -------
+  const ductSegments: DuctSegment[] = [];
+  let detectedMetres = 0;
+  let mmPerUnit = 0;
+  if (ductAnchors.length && input.segments.length) {
+    const geom: GeomSegment[] = input.segments.map((line) => ({ x1: line.start.x, y1: line.start.y, x2: line.end.x, y2: line.end.y }));
+    const detection = detectDuctSections(geom, ductAnchors);
+    mmPerUnit = detection.mmPerUnit;
+    detection.sections.forEach((section, i) => {
+      // Classify the duct body from the nearest classified terminal (supply/extract
+      // evidence propagated along the physical run), else leave it unclassified.
+      const mid = section.centreline[0];
+      let nearest: { system: 'supply' | 'extract'; distance: number } | null = null;
+      terminalAnchors.forEach((t) => {
+        const distance = Math.hypot(t.x - mid.x, t.y - mid.y);
+        if (distance <= 320 && (!nearest || distance < nearest.distance)) nearest = { system: t.system, distance };
+      });
+      const resolved: 'supply' | 'extract' | null = nearest ? (nearest as { system: 'supply' | 'extract' }).system : null;
+      const anchor = ductAnchors.find((a) => Math.abs(a.x - section.labelPoint.x) < 0.01 && Math.abs(a.y - section.labelPoint.y) < 0.01);
+      const network = resolved ? networkFor(resolved) : ([tulo, poisto, unknown].find((n) => n.id === anchor?.networkId) ?? unknown);
+      const segment: DuctSegment = {
+        id: uid('dseg'), pageNumber: input.page, networkId: network.id,
+        profile: { shape: 'round', diameterMm: section.diameterMm },
+        footprint: section.polygon,
+        confidence: section.confidence,
+        centrelinePoints: section.centreline,
+        lengthMm: section.lengthMm,
+        source: 'vector-detected',
+        verificationStatus: 'suggested',
+        relatedLabelIds: [],
+      };
+      ductSegments.push(segment); network.segmentIds.push(segment.id);
+      detectedMetres += section.lengthMm / 1000;
+      void i;
+    });
+    Object.entries(detection.rejects).forEach(([reason, count]) => unresolvedReasons.add(`${count} duct label(s): ${reason}`));
+    if (!detection.sections.length) unresolvedReasons.add('No paired duct edges matched the drawing scale near any size label.');
+  }
+
+  const networks = [tulo, poisto, unknown].filter((network) => network.nodeIds.length || network.segmentIds.length);
   boundaries.forEach((boundary) => { boundary.relatedNetworkId = (tulo.nodeIds.length ? tulo : poisto.nodeIds.length ? poisto : unknown).id; });
   // Honest empty result: no placeholder network when the page has no ventilation labels.
-  if (!partCandidates && !boundaries.length) {
+  if (!partCandidates && !boundaries.length && !ductSegments.length) {
     unresolvedReasons.add(input.textItems.length > 40
       ? 'No ventilation duct labels detected on this page — it looks like an architectural drawing, not an IV/ventilation drawing.'
       : 'No recognisable duct labels found. If this is a ventilation drawing, its labels may be drawn as vector geometry rather than text.');
@@ -193,7 +246,7 @@ export function scanDrawing(input: ScanInput): ScanOutput {
     page: input.page,
     tuloNetworks: tulo.nodeIds.length ? 1 : 0,
     poistoNetworks: poisto.nodeIds.length ? 1 : 0,
-    ductMetres: 0,
+    ductMetres: detectedMetres,
     fittings: nodes.filter((node) => ['bend', 'branch', 'transition', 'damper', 'fire-damper', 'silencer', 'cleaning-hatch'].includes(node.type)).length,
     devices: nodes.filter((node) => node.type === 'terminal').length,
     unresolved: nodes.filter((node) => node.reviewStatus === 'unresolved').length + boundaries.length,
@@ -204,5 +257,6 @@ export function scanDrawing(input: ScanInput): ScanOutput {
     unresolvedReasons: [...unresolvedReasons], labels: diagnosticsLabels,
   };
 
-  return { metadata, summary, diagnostics, networks, nodes, segments: [], boundaries };
+  if (mmPerUnit) unresolvedReasons.add(`Drawing scale solved from duct edges: ${mmPerUnit.toFixed(2)} mm per PDF unit (~1:${(mmPerUnit / (25.4 / 72)).toFixed(0)}).`);
+  return { metadata, summary, diagnostics, networks, nodes, segments: ductSegments, boundaries };
 }

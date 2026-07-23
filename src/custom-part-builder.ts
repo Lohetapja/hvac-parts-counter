@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { profileForEnd, syncCustomPartAssembly } from './custom-part-assembly';
 import { downloadCustomPartPdf } from './custom-part-pdf';
-import { buildTransitionGeometry, classifyTransition, dimensionLabel, dimensionUnit, solveBodyLengthFromEdge, swapTransitionEnds, validateCustomPart, validateDimensionValue, type DerivedEdgeKind, type EditableDimensionKey, type TransitionGeometry } from './transition-geometry';
+import { buildTransitionGeometry, classifyTransition, dimensionLabel, dimensionUnit, outlineSegments, solveBodyLengthFromEdge, swapTransitionEnds, validateCustomPart, validateDimensionValue, type DerivedEdgeKind, type EditableDimensionKey, type TransitionGeometry } from './transition-geometry';
 import { renderTechnicalView, type GridSize, type TechnicalSelection } from './transition-views';
 import { PART_CATALOGUE, CATALOGUE_CATEGORIES, templateForPart, templateThumbnail, type PartTemplateId } from './part-templates';
 import { DEMO_TEMPLATE_IDS, PROMOTIONAL_TEMPLATES, partForThumbnail, promotionalTemplateById, promotionalTemplateForPart, promotionalThumbnail, type PromotionalTemplateDefinition, type PromotionalTemplateId } from './promotional-templates';
@@ -12,7 +12,7 @@ import { PART_SAMPLES, expandQuery, sampleById, samplesForTemplate, type PartSam
 import { buildPlenumGeometry, nextPortId, portSizeLabel } from './plenum-geometry';
 import { renderPlenumViews } from './plenum-views';
 import { buildElbowGeometry } from './elbow-geometry';
-import type { CustomPart, CustomPartType, PersonalTemplate, PlenumFace, PlenumPort, VerificationStatus } from './types';
+import type { CustomPart, CustomPartType, ElementLockState, PersonalTemplate, PlenumFace, PlenumPort, VerificationStatus } from './types';
 
 const SYSTEMS = ['Supply air', 'Extract air', 'Outdoor air', 'Exhaust air', 'Transfer air', 'Other'];
 const MATERIALS = ['Galvanized steel', 'Stainless steel', 'Aluminium', 'Painted steel', 'Other'];
@@ -99,7 +99,7 @@ export function initCustomPartBuilder(root: HTMLElement, options: BuilderOptions
     <section class="builder-visuals">
       <div class="builder-preview-panel"><div class="panel-header"><div><h2>Assembly 3D preview</h2><span id="builderEditingStatus" class="badge">New part</span></div><div class="preview-actions"><button class="btn small" data-camera="front">Front</button><button class="btn small" data-camera="top">Top</button><button class="btn small" data-camera="side">Side</button><button class="btn small" data-camera="iso">Isometric</button><button id="builderFitCamera" class="btn small">Fit</button><button id="builderResetCamera" class="btn small">Reset</button></div></div><div id="builder3d" class="builder-3d" aria-label="Interactive 3D custom HVAC fitting preview"></div><div id="builder3dContext" class="builder-context hidden" aria-live="polite"></div><label class="toggle-row"><input id="builderCentreline" type="checkbox" checked> Show 3D centreline</label></div>
       <div id="builderMetrics" class="builder-metrics"></div>
-      <div class="technical-toolbar"><label><input id="builderShowDimensions" type="checkbox" checked> Show dimensions</label><label>Grid <select id="builderGrid" class="select compact"><option value="0">Off</option><option value="10">10 mm</option><option value="50" selected>50 mm</option><option value="100">100 mm</option></select></label></div>
+      <div class="technical-toolbar"><label><input id="builderShowDimensions" type="checkbox" checked> Show dimensions</label><label><input id="builderConstruction" type="checkbox"> Show construction lines</label><label>Grid <select id="builderGrid" class="select compact"><option value="0">Off</option><option value="10">10 mm</option><option value="50" selected>50 mm</option><option value="100">100 mm</option></select></label></div>
       <div id="builderDimensionEditor" class="dimension-editor hidden" role="dialog" aria-modal="false" aria-labelledby="dimensionEditorTitle"><strong id="dimensionEditorTitle"></strong><label><span class="sr-only">New value</span><input id="dimensionEditorInput" class="input" type="number"></label><span id="dimensionEditorUnit" class="dimension-unit"></span><div id="dimensionEditorHelp" class="help"></div><div id="dimensionEditorError" class="error" aria-live="polite"></div><div class="button-row"><button id="dimensionEditorConfirm" class="btn small primary">Confirm</button><button id="dimensionEditorCancel" class="btn small">Cancel</button></div></div>
       <div id="builderTechnicalViews" class="technical-grid"></div>
     </section>
@@ -149,15 +149,22 @@ export function initCustomPartBuilder(root: HTMLElement, options: BuilderOptions
   }
   function create3d(geometry: TransitionGeometry): void {
     disposeObject(); const group = new THREE.Group();
+    const isElbow = draft.partType === 'rectangular-elbow' || draft.partType === 'round-elbow';
+    const showConstruction = get<HTMLInputElement>('builderConstruction')?.checked ?? false;
     const positions = geometry.vertices.flatMap((v) => [v.x, v.y, v.z]);
     const addMesh = (pick: string, faces: Array<[number, number, number, number]>, capRing?: number[]): void => {
       const indices: number[] = []; faces.forEach(([a, b, c, d]) => indices.push(a, b, c, a, c, d)); if (capRing) for (let index = 1; index < capRing.length - 1; index += 1) indices.push(capRing[0], capRing[index], capRing[index + 1]);
       const meshGeometry = new THREE.BufferGeometry(); meshGeometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3)); meshGeometry.setIndex(indices); meshGeometry.computeVertexNormals();
       const selected = selectedSurface === pick; const mesh = new THREE.Mesh(meshGeometry, new THREE.MeshStandardMaterial({ color: selected ? 0xf1b94f : pick.startsWith('end-') ? 0x4c88aa : 0x5b9fc4, emissive: selected ? 0x5b3500 : 0x000000, metalness: .45, roughness: .48, side: THREE.DoubleSide, transparent: true, opacity: selected ? .98 : .86 })); mesh.userData.pick = pick; group.add(mesh);
-      group.add(new THREE.LineSegments(new THREE.EdgesGeometry(meshGeometry, 12), new THREE.LineBasicMaterial({ color: selected ? 0xffdd77 : 0xd8efff })));
+      // Construction geometry (every loft ring / facet / triangulation edge) is opt-in only.
+      if (showConstruction) group.add(new THREE.LineSegments(new THREE.EdgesGeometry(meshGeometry, 1), new THREE.LineBasicMaterial({ color: 0x39627b, transparent: true, opacity: .55 })));
     };
     addMesh('body', geometry.sideFaces); addMesh('end-a', [], [...geometry.endRings[0]].reverse()); addMesh('end-b', [], geometry.endRings[1]);
-    if (draft.partType !== 'rectangular-elbow' && draft.partType !== 'round-elbow') [0, 6, 12, 18].forEach((index) => { const edgeGeometry = new THREE.BufferGeometry().setFromPoints([geometry.vertices[geometry.endRings[0][index]], geometry.vertices[geometry.endRings[1][index]]].map((point) => new THREE.Vector3(point.x, point.y, point.z))); const edge = new THREE.Line(edgeGeometry, new THREE.LineBasicMaterial({ color: selectedSurface === 'edge' && selectedDimension.edgeIndex === index ? 0xffdc73 : 0xe9f7ff, linewidth: 2 })); edge.userData.pick = 'edge'; edge.userData.edgeIndex = index; group.add(edge); });
+    // Clean silhouette: inlet + outlet outlines and the four corner sweeps, always shown.
+    const outlinePositions: number[] = []; outlineSegments(geometry).forEach(([a, b]) => outlinePositions.push(a.x, a.y, a.z, b.x, b.y, b.z));
+    const outlineGeometry = new THREE.BufferGeometry(); outlineGeometry.setAttribute('position', new THREE.Float32BufferAttribute(outlinePositions, 3));
+    group.add(new THREE.LineSegments(outlineGeometry, new THREE.LineBasicMaterial({ color: 0xe9f7ff })));
+    if (!isElbow) [0, 6, 12, 18].forEach((index) => { const edgeGeometry = new THREE.BufferGeometry().setFromPoints([geometry.vertices[geometry.endRings[0][index]], geometry.vertices[geometry.endRings[1][index]]].map((point) => new THREE.Vector3(point.x, point.y, point.z))); const edge = new THREE.Line(edgeGeometry, new THREE.LineBasicMaterial({ color: selectedSurface === 'edge' && selectedDimension.edgeIndex === index ? 0xffdc73 : 0xe9f7ff, linewidth: 2 })); edge.userData.pick = 'edge'; edge.userData.edgeIndex = index; group.add(edge); });
     geometry.ports.forEach((port, index) => { const length = Math.max(40, draft.lengthMm * .18); const axis = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(port.position.x, port.position.y, port.position.z), new THREE.Vector3(port.position.x + port.direction.x * length, port.position.y + port.direction.y * length, port.position.z + port.direction.z * length)]); group.add(new THREE.Line(axis, new THREE.LineBasicMaterial({ color: port.role === 'inlet' ? 0x65c7ff : 0xffb15c }))); addPortLabel(group, index === 0 ? 'P1' : 'P2', port.position, lockLevel(lockStateFor(draft, index === 0 ? 'portA' : 'portB')) !== 'unlocked'); });
     if (get<HTMLInputElement>('builderCentreline').checked) { const path = geometry.centreline ?? [{ x: 0, y: 0, z: 0 }, { x: draft.horizontalOffsetMm, y: draft.verticalOffsetMm, z: draft.lengthMm }]; const centre = new THREE.BufferGeometry().setFromPoints(path.map((point) => new THREE.Vector3(point.x, point.y, point.z))); group.add(new THREE.Line(centre, new THREE.LineDashedMaterial({ color: 0xffd479, dashSize: Math.max(10, geometry.centrelineLengthMm / 25), gapSize: Math.max(6, geometry.centrelineLengthMm / 40) }))); (group.children[group.children.length - 1] as THREE.Line).computeLineDistances(); }
     // Anchor shift: when P2 is the locked anchor the body regenerates around it, so
@@ -234,7 +241,7 @@ export function initCustomPartBuilder(root: HTMLElement, options: BuilderOptions
     options.notify(`New part started from “${template.name}”`);
   }
 
-  const FILTERS = ['All', 'Rectangular', 'Round', 'Mixed profile', 'Transitions', 'Bends', 'Branches', 'Plenums', 'My templates', 'Favourites'];
+  const FILTERS = ['All', 'Shape changes', 'Bends', 'Boxes', 'Connections', 'My templates', 'Favourites'];
   function templateMatches(t: PromotionalTemplateDefinition): boolean {
     const q = librarySearch.trim().toLowerCase();
     if (q) {
@@ -247,13 +254,10 @@ export function initCustomPartBuilder(root: HTMLElement, options: BuilderOptions
       if (!matched) return false;
     }
     switch (libraryFilter) {
+      case 'Shape changes': return t.group === 'Shape changes';
       case 'Bends': return t.group === 'Bends';
-      case 'Rectangular': return t.category === 'Rectangular';
-      case 'Round': return t.category === 'Round';
-      case 'Mixed profile': return t.category === 'Mixed profile';
-      case 'Branches': return t.category === 'Branches';
-      case 'Plenums': return t.category === 'Plenums';
-      case 'Transitions': return t.family.includes('loft');
+      case 'Boxes': return t.group === 'Boxes';
+      case 'Connections': return t.group === 'Connections';
       case 'My templates': case 'Favourites': return false;
       default: return true;
     }
@@ -275,8 +279,8 @@ export function initCustomPartBuilder(root: HTMLElement, options: BuilderOptions
       <div class="tpl-meta"><span>${htmlEscape(t.profilePath)} · ${t.portCount} ports</span></div>
       <button class="btn small primary" data-open-template="${t.id}">Open template</button>
     </article>`;
-    const groups = ['Transitions', 'Bends', 'Branches', 'Boxes and equipment'] as const;
-    const standardCards = groups.map((group) => { const cards = standard.filter((template) => template.group === group).map(card).join(''); return cards ? `<section class="tpl-family-group"><h2>${group}</h2><div class="tpl-family-grid">${cards}</div></section>` : ''; }).join('');
+    const groups = ['Shape changes', 'Bends', 'Boxes', 'Connections'] as const;
+    const standardCards = groups.map((group) => { const cards = standard.filter((template) => template.group === group).map(card).join(''); return cards ? `<section class="tpl-family-group"><h2>${group.toUpperCase()}</h2><div class="tpl-family-grid">${cards}</div></section>` : ''; }).join('');
 
     const personalCards = showPersonal ? personalMatches.map((t) => `<article class="tpl-card personal">
       <div class="tpl-thumb">${promotionalTemplateById(t.sourceTemplateId) ? promotionalThumbnail(promotionalTemplateById(t.sourceTemplateId)!) : templateThumbnail((t.sourceTemplateId as PartTemplateId) || 'rectangular-transition')}</div>
@@ -425,6 +429,14 @@ export function initCustomPartBuilder(root: HTMLElement, options: BuilderOptions
   // --- Plenum editor --------------------------------------------------------
   const FACES: PlenumFace[] = ['front', 'back', 'top', 'bottom', 'left', 'right'];
   function plenumPorts(): PlenumPort[] { return draft.plenumPorts ?? []; }
+  // Face dimensions along its local horizontal / vertical axes, so a face offset can be
+  // shown to installers as a distance from an understandable edge rather than a raw offset.
+  function plenumFaceSpan(face: PlenumFace): { horiz: number; vert: number } {
+    const w = draft.bodyWidthMm ?? 600; const h = draft.bodyHeightMm ?? 400; const d = draft.bodyDepthMm ?? 300;
+    if (face === 'top' || face === 'bottom') return { horiz: w, vert: d };
+    if (face === 'left' || face === 'right') return { horiz: d, vert: h };
+    return { horiz: w, vert: h };
+  }
   function updatePorts(next: PlenumPort[]): void { draft.plenumPorts = next; draft.updatedAt = timestamp(); render(); if (editingExisting) options.onChange?.(structuredClone(draft)); }
 
   function addPort(shape: 'round' | 'rectangular'): void {
@@ -464,7 +476,14 @@ export function initCustomPartBuilder(root: HTMLElement, options: BuilderOptions
         ${selected.shape === 'round'
           ? `<label class="field"><span class="label">Diameter (mm)</span><input class="input" type="number" inputmode="numeric" data-port-field="diameterMm" value="${selected.diameterMm}"></label>`
           : `<div class="inline"><label class="field"><span class="label">Width (mm)</span><input class="input" type="number" inputmode="numeric" data-port-field="widthMm" value="${selected.widthMm}"></label><label class="field"><span class="label">Height (mm)</span><input class="input" type="number" inputmode="numeric" data-port-field="heightMm" value="${selected.heightMm}"></label></div>`}
-        <div class="inline">
+        ${(() => { const span = plenumFaceSpan(selected.face); const fromLeft = Math.round(span.horiz / 2 + selected.offsetHorizontalMm); const fromBottom = Math.round(span.vert / 2 + selected.offsetVerticalMm); return quickMode
+          ? `<div class="inline">
+          <label class="field"><span class="label">Distance from left edge (mm)</span><input class="input" type="number" inputmode="numeric" data-port-edge="left" value="${fromLeft}"></label>
+          <label class="field"><span class="label">Distance from bottom edge (mm)</span><input class="input" type="number" inputmode="numeric" data-port-edge="bottom" value="${fromBottom}"></label>
+        </div>
+        <div class="button-row"><button class="btn small" data-port-centre="${selected.id}">Centre on face</button></div>
+        <label class="field"><span class="label">Projection length (mm)</span><input class="input" type="number" inputmode="numeric" data-port-field="projectionMm" value="${selected.projectionMm}"><span class="help">How far the connector stands off the ${selected.face} face.</span></label>`
+          : `<div class="inline">
           <label class="field"><span class="label">Offset H (mm)</span><input class="input" type="number" inputmode="numeric" data-port-field="offsetHorizontalMm" value="${selected.offsetHorizontalMm}"></label>
           <label class="field"><span class="label">Offset V (mm)</span><input class="input" type="number" inputmode="numeric" data-port-field="offsetVerticalMm" value="${selected.offsetVerticalMm}"></label>
         </div>
@@ -472,7 +491,7 @@ export function initCustomPartBuilder(root: HTMLElement, options: BuilderOptions
           <label class="field"><span class="label">Connector (mm)</span><input class="input" type="number" inputmode="numeric" data-port-field="projectionMm" value="${selected.projectionMm}"></label>
           <label class="field"><span class="label">Rotation (°)</span><input class="input" type="number" inputmode="numeric" data-port-field="rotationDeg" value="${selected.rotationDeg}"></label>
         </div>
-        <label class="field"><span class="label">Branch angle (°)</span><input class="input" type="number" min="45" max="135" data-port-field="branchAngleDeg" value="${selected.branchAngleDeg ?? 90}"><span class="help">90° is perpendicular to the host duct.</span></label>
+        <label class="field"><span class="label">Branch angle (°)</span><input class="input" type="number" min="45" max="135" data-port-field="branchAngleDeg" value="${selected.branchAngleDeg ?? 90}"><span class="help">90° is perpendicular to the host duct.</span></label>`; })()}
         <label class="lock-row"><input type="checkbox" data-port-lock="${selected.id}" ${selected.locks && (selected.locks.grounded || selected.locks.position.x) ? 'checked' : ''}> 📌 Lock this port on its host face</label>
         <div class="button-row"><button class="btn small ghost danger" data-delete-port="${selected.id}">Delete outlet</button></div>
       </fieldset>` : ''}
@@ -560,7 +579,7 @@ export function initCustomPartBuilder(root: HTMLElement, options: BuilderOptions
     if (!template) { panel.innerHTML = ''; panel.classList.add('hidden'); return; }
     panel.classList.remove('hidden'); const elbow = template.family === 'elbow';
     panel.innerHTML = `<div class="preset-heading"><span class="label">Family presets</span><span class="help">Presets change starting dimensions, not the library count.</span></div><div class="preset-chips">${template.presets.map((item) => `<button class="duct-chip ${draft.presetId === item.id ? 'active' : ''}" data-family-preset="${item.id}">${htmlEscape(item.name)}</button>`).join('')}</div>`
-      + (elbow ? `<fieldset><legend>Swept elbow geometry</legend><div class="inline"><label class="field"><span class="label">Bend radius (mm)</span><input class="input" type="number" min="1" max="20000" data-hero-number="bendRadiusMm" value="${draft.bendRadiusMm ?? draft.lengthMm}"><span class="error" data-error="bendRadiusMm"></span></label><label class="field"><span class="label">Bend angle (°)</span><input class="input" type="number" min="15" max="135" data-hero-number="bendAngleDeg" value="${draft.bendAngleDeg ?? 90}"><span class="error" data-error="bendAngleDeg"></span></label></div><div class="inline"><label class="field"><span class="label">Inlet extension (mm)</span><input class="input" type="number" min="0" max="5000" data-hero-number="inletExtensionMm" value="${draft.inletExtensionMm ?? 120}"></label><label class="field"><span class="label">Outlet extension (mm)</span><input class="input" type="number" min="0" max="5000" data-hero-number="outletExtensionMm" value="${draft.outletExtensionMm ?? 120}"></label></div><label class="field"><span class="label">Sweep segments</span><input class="input" type="number" min="4" max="48" data-hero-number="segmentCount" value="${draft.segmentCount ?? 12}"></label></fieldset>` : '');
+      + (elbow ? `<fieldset><legend>Swept elbow geometry</legend><div class="inline"><label class="field"><span class="label">Bend radius (mm)</span><input class="input" type="number" min="1" max="20000" data-hero-number="bendRadiusMm" value="${draft.bendRadiusMm ?? draft.lengthMm}"><span class="error" data-error="bendRadiusMm"></span></label><label class="field"><span class="label">Bend angle (°)</span><input class="input" type="number" min="15" max="135" data-hero-number="bendAngleDeg" value="${draft.bendAngleDeg ?? 90}"><span class="error" data-error="bendAngleDeg"></span></label></div><div class="inline"><label class="field"><span class="label">Inlet extension (mm)</span><input class="input" type="number" min="0" max="5000" data-hero-number="inletExtensionMm" value="${draft.inletExtensionMm ?? 120}"></label><label class="field"><span class="label">Outlet extension (mm)</span><input class="input" type="number" min="0" max="5000" data-hero-number="outletExtensionMm" value="${draft.outletExtensionMm ?? 120}"></label></div><label class="field"><span class="label">Sweep segments</span><input class="input" type="number" min="4" max="48" data-hero-number="segmentCount" value="${draft.segmentCount ?? 12}"></label><div class="inline"><label class="lock-row"><input type="checkbox" data-keep-fixed="P1" ${draft.portALocks?.grounded ? 'checked' : ''}> 📌 Keep P1 fixed</label><label class="lock-row"><input type="checkbox" data-keep-fixed="P2" ${draft.portBLocks?.grounded ? 'checked' : ''}> 📌 Keep P2 fixed</label></div></fieldset>` : '');
   }
   function render(): void {
     readDraft(); const errors = validateCustomPart(draft); root.querySelectorAll<HTMLElement>('[data-error]').forEach((element) => { const key = element.dataset.error as keyof CustomPart; element.textContent = errors[key] ?? ''; });
@@ -585,8 +604,8 @@ export function initCustomPartBuilder(root: HTMLElement, options: BuilderOptions
     get('builderTitle').textContent = template?.name ?? partTypeInput.selectedOptions[0]?.textContent ?? 'Transition'; get('builderClassification').textContent = isElbow ? `${draft.partType === 'round-elbow' ? 'Round' : 'Rectangular'} swept ${draft.bendAngleDeg ?? 90}° elbow` : classifyTransition(draft);
     if (Object.keys(errors).length) { get<HTMLButtonElement>('builderSave').disabled = true; get<HTMLButtonElement>('builderPdf').disabled = true; return; }
     get<HTMLButtonElement>('builderSave').disabled = false; get<HTMLButtonElement>('builderPdf').disabled = false; draft = syncCustomPartAssembly(draft); const geometry = isElbow ? buildElbowGeometry(draft) : buildTransitionGeometry(draft); create3d(geometry);
-    const showDimensions = get<HTMLInputElement>('builderShowDimensions').checked; const grid = Number(get<HTMLSelectElement>('builderGrid').value) as GridSize;
-    technical.innerHTML = renderTechnicalView(draft, geometry, 'isometric', false, grid, selectedDimension) + renderTechnicalView(draft, geometry, 'front', showDimensions, grid, selectedDimension) + renderTechnicalView(draft, geometry, 'top', showDimensions, grid, selectedDimension) + renderTechnicalView(draft, geometry, 'side', showDimensions, grid, selectedDimension);
+    const showDimensions = get<HTMLInputElement>('builderShowDimensions').checked; const grid = Number(get<HTMLSelectElement>('builderGrid').value) as GridSize; const showConstruction = get<HTMLInputElement>('builderConstruction').checked;
+    technical.innerHTML = renderTechnicalView(draft, geometry, 'isometric', false, grid, selectedDimension, showConstruction) + renderTechnicalView(draft, geometry, 'front', showDimensions, grid, selectedDimension, showConstruction) + renderTechnicalView(draft, geometry, 'top', showDimensions, grid, selectedDimension, showConstruction) + renderTechnicalView(draft, geometry, 'side', showDimensions, grid, selectedDimension, showConstruction);
     const sizeA = profileA === 'round' ? `Ø${draft.endADiameterMm}` : `${draft.endAWidthMm} × ${draft.endAHeightMm}`; const sizeB = profileB === 'round' ? `Ø${draft.endBDiameterMm}` : `${draft.endBWidthMm} × ${draft.endBHeightMm}`; const direction = geometry.ports[1].direction;
     metrics.innerHTML = `<div><span>Port P1</span><b>${sizeA} mm</b></div><div><span>Port P2</span><b>${sizeB} mm</b></div><div><span>Body / centreline</span><b>${draft.lengthMm} / ${geometry.centrelineLengthMm.toFixed(1)} mm</b></div><div><span>Offsets X / Y</span><b>${draft.horizontalOffsetMm > 0 ? '+' : ''}${draft.horizontalOffsetMm} / ${draft.verticalOffsetMm > 0 ? '+' : ''}${draft.verticalOffsetMm} mm</b></div><div><span>P2 direction</span><b>${direction.x.toFixed(3)}, ${direction.y.toFixed(3)}, ${direction.z.toFixed(3)}</b></div><div><span>Surface area</span><b>${geometry.surfaceAreaM2.toFixed(3)} m²</b></div><p>Geometric estimates only; verify all ports, angles and dimensions before fabrication.</p>`;
     NUMERIC_KEYS.forEach((key) => inputs[key].classList.toggle('selected-parameter', selectedDimension.key === key)); renderContext(); renderer?.render(scene, camera);
@@ -816,6 +835,8 @@ export function initCustomPartBuilder(root: HTMLElement, options: BuilderOptions
     if (add) { addPort(add === 'round' ? 'round' : 'rectangular'); return; }
     const select = target.closest<HTMLElement>('[data-select-port]')?.dataset.selectPort;
     if (select) { selectedPortId = select; render(); return; }
+    const centre = target.closest<HTMLElement>('[data-port-centre]')?.dataset.portCentre;
+    if (centre) { updatePorts(plenumPorts().map((p) => p.id !== centre ? p : { ...p, offsetHorizontalMm: 0, offsetVerticalMm: 0 })); options.notify(`Outlet ${centre} centred on its face`); return; }
     const portLock = target.closest<HTMLInputElement>('[data-port-lock]')?.dataset.portLock;
     if (portLock) {
       const on = (target as HTMLInputElement).checked;
@@ -848,6 +869,16 @@ export function initCustomPartBuilder(root: HTMLElement, options: BuilderOptions
       if (Number.isFinite(value)) { (draft as unknown as Record<string, number>)[bodyKey] = value; scheduleRender(); }
       return;
     }
+    // Quick-mode edge distances → stored face-centre offsets.
+    const edge = target.closest<HTMLElement>('[data-port-edge]')?.dataset.portEdge;
+    if (edge && selectedPortId) {
+      const value = Number((target as HTMLInputElement).value); if (!Number.isFinite(value)) return;
+      draft.plenumPorts = plenumPorts().map((p) => {
+        if (p.id !== selectedPortId) return p; const span = plenumFaceSpan(p.face);
+        return edge === 'left' ? { ...p, offsetHorizontalMm: value - span.horiz / 2 } : { ...p, offsetVerticalMm: value - span.vert / 2 };
+      });
+      scheduleRender(); return;
+    }
     const field = target.closest<HTMLElement>('[data-port-field]')?.dataset.portField;
     if (!field || !selectedPortId) return;
     const ports = plenumPorts().map((p) => {
@@ -860,6 +891,13 @@ export function initCustomPartBuilder(root: HTMLElement, options: BuilderOptions
   };
   get('plenumPanel').addEventListener('input', applyPlenumInput);
   get('plenumPanel').addEventListener('change', applyPlenumInput);
+  // "Keep P1 / P2 fixed" grounds a bend end so edits regenerate around the other end.
+  get('heroPresetPanel').addEventListener('change', (event) => {
+    const keep = (event.target as HTMLElement).closest<HTMLInputElement>('[data-keep-fixed]'); if (!keep) return;
+    const on = keep.checked; const grounded: ElementLockState = { ...emptyLockState(), grounded: on, position: { x: on, y: on, z: on } };
+    if (keep.dataset.keepFixed === 'P1') draft.portALocks = grounded; else draft.portBLocks = grounded;
+    lastValidDraft = structuredClone(draft); render(); options.notify(`${keep.dataset.keepFixed} ${on ? 'kept fixed' : 'released'}`);
+  });
   get('builderQuickMode').addEventListener('click', () => { quickMode = true; applyMode(); options.notify('Quick mode: installer measurements only'); });
   get('builderAdvancedMode').addEventListener('click', () => { quickMode = false; applyMode(); options.notify('Advanced mode: ports, locks and constraints available'); });
   get('startingPointPanel').addEventListener('click', (event) => {
@@ -890,6 +928,7 @@ export function initCustomPartBuilder(root: HTMLElement, options: BuilderOptions
   get('builderFitCamera').addEventListener('click', () => fitCamera(camera.position.clone().sub(controls?.target ?? new THREE.Vector3())));
   get('builderResetCamera').addEventListener('click', () => fitCamera());
   get('builderCentreline').addEventListener('change', render);
+  get('builderConstruction').addEventListener('change', render);
   get('builderPdf').addEventListener('click', () => { readDraft(); const errors = validateCustomPart(draft); if (Object.keys(errors).length) { render(); options.notify('Correct the highlighted measurements before exporting'); return; } draft = syncCustomPartAssembly(draft); downloadCustomPartPdf(draft); options.notify('Two-page custom fitting PDF created'); });
   get('builderSave').addEventListener('click', () => { readDraft(); const errors = validateCustomPart(draft); if (Object.keys(errors).length) { render(); options.notify('Correct the highlighted measurements before saving'); return; } draft = syncCustomPartAssembly(draft); options.onSave(structuredClone(draft)); });
 

@@ -1,4 +1,4 @@
-import { buildTransitionGeometry } from './transition-geometry';
+import { buildTransitionGeometry, outlineSegments } from './transition-geometry';
 import { projectVertex, type Projection } from './transition-views';
 import { buildPlenumGeometry, portSizeLabel } from './plenum-geometry';
 import { buildElbowGeometry } from './elbow-geometry';
@@ -23,8 +23,8 @@ function drawing(part: CustomPart, projection: Projection, x: number, y: number,
   const usedWidth = (maxX - minX) * scale; const usedHeight = (maxY - minY) * scale; const originX = x + 12 + (availableWidth - usedWidth) / 2; const originY = y + 10 + (availableHeight - usedHeight) / 2;
   const map = (point: { x: number; y: number }): { x: number; y: number } => ({ x: originX + (point.x - minX) * scale, y: originY + (maxY - point.y) * scale });
   let commands = text(x, y + height - 11, projection.toUpperCase(), 8, true) + line(x, y, x + width, y) + line(x + width, y, x + width, y + height) + line(x + width, y + height, x, y + height) + line(x, y + height, x, y);
-  geometry.endRings.forEach((ring) => ring.forEach((index, ringIndex) => { const a = map(points[index]); const b = map(points[ring[(ringIndex + 1) % ring.length]]); commands += line(a.x, a.y, b.x, b.y, .8); }));
-  const edgeKeys = new Set<string>(); geometry.sideFaces.forEach((face) => face.forEach((index, position) => { const next = face[(position + 1) % face.length]; const key = index < next ? `${index}:${next}` : `${next}:${index}`; if (!edgeKeys.has(key)) { edgeKeys.add(key); const a = map(points[index]); const b = map(points[next]); commands += line(a.x, a.y, b.x, b.y, .45); } }));
+  // Clean drawing style: inlet / outlet outlines and corner sweeps only — no mesh subdivision.
+  outlineSegments(geometry).forEach(([start, end]) => { const a = map(projectVertex(start, projection)); const b = map(projectVertex(end, projection)); commands += line(a.x, a.y, b.x, b.y, .8); });
   const p1 = map(projectVertex(geometry.ports[0].position, projection)); const p2 = map(projectVertex(geometry.ports[1].position, projection));
   commands += text(p1.x + 3, p1.y + 3, 'P1', 7, true) + text(p2.x + 3, p2.y + 3, 'P2', 7, true); return commands;
 }

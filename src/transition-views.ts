@@ -42,7 +42,7 @@ function edgeLength(a: Vertex3, b: Vertex3, projection: Projection): number {
 }
 function endLocked(part: CustomPart, end: 'a' | 'b'): boolean { const locks = end === 'a' ? part.portALocks : part.portBLocks; return Boolean(locks && (locks.grounded || locks.position.x || locks.position.y || locks.position.z || locks.profileLocked)); }
 
-export function renderTechnicalView(part: CustomPart, geometry: TransitionGeometry, projection: Projection, showDimensions: boolean, grid: GridSize, selection: TechnicalSelection = {}): string {
+export function renderTechnicalView(part: CustomPart, geometry: TransitionGeometry, projection: Projection, showDimensions: boolean, grid: GridSize, selection: TechnicalSelection = {}, showConstruction = false): string {
   const points = geometry.vertices.map((vertex) => projectVertex(vertex, projection)); const ringA = geometry.endRings[0].map((index) => points[index]); const ringB = geometry.endRings[1].map((index) => points[index]); const aBounds = bounds(ringA); const bBounds = bounds(ringB);
   const xs = points.map((p) => p.x); const ys = points.map((p) => p.y); const minX = Math.min(...xs); const maxX = Math.max(...xs); const minY = Math.min(...ys); const maxY = Math.max(...ys); const span = Math.max(maxX - minX, maxY - minY, 100); const padding = span * .25 + 55; const patternId = `grid-${projection}`;
   const viewBox = `${minX - padding} ${minY - padding} ${maxX - minX + padding * 2} ${maxY - minY + padding * 2}`;
@@ -50,13 +50,18 @@ export function renderTechnicalView(part: CustomPart, geometry: TransitionGeomet
   const defs = `<defs><marker id="arrow" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 10 1 L 1 5 L 10 9" fill="none" stroke="currentColor"/></marker></defs>`;
   const derivedKind: DerivedEdgeKind | null = projection === 'top' ? 'top-edge' : projection === 'side' ? 'side-edge' : null;
   const isElbow = part.partType === 'rectangular-elbow' || part.partType === 'round-elbow';
-  let links = (isElbow ? [] : [0, 6, 12, 18]).map((index) => {
-    const selected = derivedKind === selection.edgeKind && (selection.edgeIndex ?? 0) === index; const attributes = derivedKind ? `data-edge-kind="${derivedKind}" data-edge-index="${index}" role="button" tabindex="0" aria-label="Edit calculated ${projection} sloping edge length"` : '';
-    return `<g class="edge-target${selected ? ' selected' : ''}" ${attributes}>${line(ringA[index], ringB[index], 'transition-edge')}${line(ringA[index], ringB[index], 'hit-line')}</g>`;
-  }).join('');
-  const edgeKeys = new Set<string>(); let bodyEdges = '';
-  geometry.sideFaces.forEach((face) => face.forEach((index, position) => { const next = face[(position + 1) % face.length]; const key = index < next ? `${index}:${next}` : `${next}:${index}`; if (!edgeKeys.has(key)) { edgeKeys.add(key); bodyEdges += line(points[index], points[next], 'body-edge'); } }));
-  links = bodyEdges + links;
+  const stride = geometry.endRings[0].length || 24; const ringCount = Math.max(2, Math.round(geometry.vertices.length / stride));
+  // Every loft ring / surface subdivision / triangulation edge is construction geometry — opt-in only.
+  let construction = '';
+  if (showConstruction) { const edgeKeys = new Set<string>(); geometry.sideFaces.forEach((face) => face.forEach((index, position) => { const next = face[(position + 1) % face.length]; const key = index < next ? `${index}:${next}` : `${next}:${index}`; if (!edgeKeys.has(key)) { edgeKeys.add(key); construction += line(points[index], points[next], 'construction'); } })); }
+  // Clean longitudinal outline: straight, editable corner connectors for lofts; curved corner sweeps for elbows.
+  let links = isElbow
+    ? [0, 6, 12, 18].map((corner) => `<polyline class="transition-edge" fill="none" points="${Array.from({ length: ringCount }, (_, ring) => { const p = points[ring * stride + corner]; return `${p.x},${p.y}`; }).join(' ')}"/>`).join('')
+    : [0, 6, 12, 18].map((index) => {
+      const selected = derivedKind === selection.edgeKind && (selection.edgeIndex ?? 0) === index; const attributes = derivedKind ? `data-edge-kind="${derivedKind}" data-edge-index="${index}" role="button" tabindex="0" aria-label="Edit calculated ${projection} sloping edge length"` : '';
+      return `<g class="edge-target${selected ? ' selected' : ''}" ${attributes}>${line(ringA[index], ringB[index], 'transition-edge')}${line(ringA[index], ringB[index], 'hit-line')}</g>`;
+    }).join('');
+  links = construction + links;
   const centreA = projectVertex(geometry.ports[0].position, projection); const centreB = projectVertex(geometry.ports[1].position, projection);
   const sizeA = profileSize(part, 'a'); const sizeB = profileSize(part, 'b'); let profileHits = '';
   if (projection === 'front') {

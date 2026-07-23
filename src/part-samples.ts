@@ -73,7 +73,7 @@ export const PART_SAMPLES: PartSample[] = [
     },
   },
   {
-    id: 'rect-heitto-double', templateId: 'rectangular-transition',
+    id: 'rect-heitto-double', templateId: 'rectangular-heitto', recommended: true,
     name: '500 × 300 double-offset heitto',
     use: 'Moves a run sideways and up without changing duct size — routing around an obstacle.',
     summary: '500×300 both ends, L800, 200 across / 250 up', tags: ['heitto', 'offset', 'siirtymä', 'jog'],
@@ -97,7 +97,7 @@ export const PART_SAMPLES: PartSample[] = [
     },
   },
   {
-    id: 'equipment-adapter-angled', templateId: 'rectangular-to-round',
+    id: 'equipment-adapter-angled', templateId: 'equipment-adapter', recommended: true,
     name: '500 × 300 equipment connection with angled Ø250 outlet',
     use: 'Joins an air-handling unit spigot where the duct leaves at an angle.',
     summary: '500×300 → Ø250, L600, outlet angled 18°', tags: ['equipment', 'laite', 'adapter', 'angled'],
@@ -108,29 +108,7 @@ export const PART_SAMPLES: PartSample[] = [
       outletHorizontalAngleDeg: 18, outletVerticalAngleDeg: 0, outletRotationDeg: 0,
     },
   },
-  // --- Round reducer -------------------------------------------------------
-  {
-    id: 'round-reducer-eccentric', templateId: 'round-reducer', recommended: true,
-    name: 'Ø315 → Ø200 eccentric reducer',
-    use: 'Spiral-duct size change kept flush on one side so it can run against a soffit.',
-    summary: 'Ø315 → Ø200, L450, offset one side', tags: ['supistus', 'reducer', 'round', 'pyöreä', 'eccentric'],
-    defaults: {
-      ...MATERIAL, name: 'Ø315 → Ø200 eccentric reducer',
-      endADiameterMm: 315, endBDiameterMm: 200, lengthMm: 450,
-      horizontalOffsetMm: 0, verticalOffsetMm: -57.5,
-    },
-  },
-  {
-    id: 'round-reducer-concentric', templateId: 'round-reducer',
-    name: 'Ø250 → Ø160 concentric reducer',
-    use: 'Standard in-line spiral reduction on a branch run.',
-    summary: 'Ø250 → Ø160, L300, centred', tags: ['supistus', 'reducer', 'concentric'],
-    defaults: {
-      ...MATERIAL, name: 'Ø250 → Ø160 concentric reducer',
-      endADiameterMm: 250, endBDiameterMm: 160, lengthMm: 300, horizontalOffsetMm: 0, verticalOffsetMm: 0,
-    },
-  },
-  // --- Bends ---------------------------------------------------------------
+  // --- Bends (rectangular custom bend only) --------------------------------
   {
     id: 'rect-elbow-90', templateId: 'rectangular-elbow', recommended: true,
     name: '500 × 300 rectangular 90° bend',
@@ -153,29 +131,7 @@ export const PART_SAMPLES: PartSample[] = [
       bendAngleDeg: 45, bendRadiusMm: 380, inletExtensionMm: 120, outletExtensionMm: 120, segmentCount: 10,
     },
   },
-  {
-    id: 'round-elbow-90', templateId: 'round-elbow', recommended: true,
-    name: 'Ø200 round 90° bend',
-    use: 'Standard spiral-duct right-angle turn on a branch.',
-    summary: 'Ø200, 90°, R300, 120 mm tails', tags: ['käyrä', 'elbow', 'bend', 'round', 'pyöreä'],
-    defaults: {
-      ...MATERIAL, name: 'Ø200 round 90° bend',
-      endADiameterMm: 200, endBDiameterMm: 200,
-      bendAngleDeg: 90, bendRadiusMm: 300, inletExtensionMm: 120, outletExtensionMm: 120, segmentCount: 14,
-    },
-  },
-  {
-    id: 'round-elbow-45', templateId: 'round-elbow',
-    name: 'Ø160 round 45° bend',
-    use: 'Small branch offset around a beam or luminaire.',
-    summary: 'Ø160, 45°, R240', tags: ['käyrä', 'elbow', '45', 'round'],
-    defaults: {
-      ...MATERIAL, name: 'Ø160 round 45° bend',
-      endADiameterMm: 160, endBDiameterMm: 160,
-      bendAngleDeg: 45, bendRadiusMm: 240, inletExtensionMm: 100, outletExtensionMm: 100, segmentCount: 10,
-    },
-  },
-  // --- Branches and saddles (one host-branch family) -----------------------
+  // --- Saddles / branch connections (round + rectangular host-branch) ------
   {
     id: 'round-saddle-top', templateId: 'round-saddle', recommended: true,
     name: 'Ø200 top saddle on 500 × 300 duct',
@@ -192,7 +148,7 @@ export const PART_SAMPLES: PartSample[] = [
     },
   },
   {
-    id: 'rect-saddle-side', templateId: 'round-saddle',
+    id: 'rect-saddle-side', templateId: 'rectangular-saddle', recommended: true,
     name: '300 × 200 side saddle on 600 × 400 duct',
     use: 'Rectangular branch off the side of a main duct serving a second zone.',
     summary: 'Host 600×400 × L800, 300×200 branch on side', tags: ['satula', 'saddle', 'haara', 'branch', 'rectangular'],
@@ -203,21 +159,6 @@ export const PART_SAMPLES: PartSample[] = [
       plenumPorts: [
         mainOutlet(600, 400),
         port({ id: 'B1', name: 'Rectangular branch B1', face: 'right', shape: 'rectangular', widthMm: 300, heightMm: 200, offsetHorizontalMm: 0, offsetVerticalMm: 0, projectionMm: 160, role: 'branch' }),
-      ],
-    },
-  },
-  {
-    id: 'rect-tee-branch', templateId: 'round-saddle',
-    name: '500 × 300 main with 250 × 200 branch (T-piece)',
-    use: 'Splits a rectangular main into a continuing run and a perpendicular branch.',
-    summary: 'Host 500×300 × L850, 250×200 branch at 90°', tags: ['haara', 'tee', 't-piece', 'branch'],
-    defaults: {
-      ...MATERIAL, name: '500 × 300 main with 250 × 200 branch',
-      bodyWidthMm: 500, bodyHeightMm: 300, bodyDepthMm: 850,
-      endAWidthMm: 500, endAHeightMm: 300,
-      plenumPorts: [
-        mainOutlet(500, 300),
-        port({ id: 'B1', name: 'Branch B1', face: 'right', shape: 'rectangular', widthMm: 250, heightMm: 200, offsetHorizontalMm: 0, offsetVerticalMm: 0, projectionMm: 260, branchAngleDeg: 90, role: 'branch' }),
       ],
     },
   },
@@ -240,7 +181,7 @@ export const PART_SAMPLES: PartSample[] = [
     },
   },
   {
-    id: 'equipment-box', templateId: 'plenum-four-outlet',
+    id: 'equipment-box', templateId: 'closed-box', recommended: true,
     name: '600 × 400 × 350 equipment box',
     use: 'Closed box connecting a rectangular duct to a single round equipment spigot.',
     summary: 'Body 600×400×350, rect inlet 400×250, one Ø200 outlet', tags: ['laatikko', 'box', 'equipment', 'laite'],
@@ -254,7 +195,7 @@ export const PART_SAMPLES: PartSample[] = [
     },
   },
   {
-    id: 'terminal-box', templateId: 'plenum-four-outlet',
+    id: 'terminal-box', templateId: 'closed-box',
     name: '400 × 300 terminal box with Ø200 connection',
     use: 'Diffuser box: round duct connection on top, rectangular terminal opening at the front.',
     summary: 'Body 400×300×250, Ø200 top inlet, 300×200 face opening', tags: ['päätelaatikko', 'terminal box', 'diffuser', 'laatikko'],
@@ -275,6 +216,14 @@ export const PART_SAMPLES: PartSample[] = [
  * visible rather than silently filled with something that only looks plausible.
  */
 export const REJECTED_SAMPLES: Array<{ name: string; reason: string }> = [
+  {
+    name: 'Round straight duct, standard round 45° / 90° bends, concentric round reducer',
+    reason: 'Standard stocked round parts bought off the shelf, not job-specific fabrication. They belong in the ordinary material catalogue, not the custom-part library.',
+  },
+  {
+    name: 'Ordinary round T-piece / standard connectors and end caps',
+    reason: 'Catalogue purchases. The previous rectangular T-piece was also removed because a box-on-box branch is not a credible fabricated fitting; use a round or rectangular saddle on a host body instead.',
+  },
   {
     name: 'Ø250 round main with Ø160 branch (round T-piece)',
     reason: 'The host-branch family models the main duct as a rectangular body, so a round main would be drawn as a box. Needs a round host generator before it can be shipped honestly.',
@@ -318,8 +267,8 @@ export const SEARCH_ALIASES: Record<string, string[]> = {
   kulma: ['bend', 'elbow'],
   satula: ['saddle', 'branch', 'takeoff'],
   saddle: ['satula', 'branch', 'takeoff'],
-  haara: ['branch', 'tee', 't-piece', 'saddle'],
-  branch: ['haara', 'saddle', 'tee'],
+  haara: ['branch', 'saddle', 'takeoff'],
+  branch: ['haara', 'saddle', 'takeoff'],
   laatikko: ['box', 'plenum', 'terminal box'],
   box: ['laatikko', 'plenum'],
   plenum: ['laatikko', 'box', 'jakolaatikko'],

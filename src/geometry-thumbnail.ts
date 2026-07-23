@@ -1,6 +1,6 @@
 import { buildElbowGeometry } from './elbow-geometry';
 import { buildPlenumGeometry } from './plenum-geometry';
-import { buildTransitionGeometry } from './transition-geometry';
+import { buildTransitionGeometry, outlineSegments } from './transition-geometry';
 import type { CustomPart, Vector3 } from './types';
 
 type Edge = [Vector3, Vector3];
@@ -23,17 +23,10 @@ function meshEdges(part: CustomPart): Edge[] {
     });
     return edges;
   }
+  // Clean silhouette (inlet / outlet outlines + corner sweeps) — no mesh subdivision,
+  // matching the clean 3D and technical-view drawing style.
   const geometry = part.partType === 'rectangular-elbow' || part.partType === 'round-elbow' ? buildElbowGeometry(part) : buildTransitionGeometry(part);
-  const keys = new Set<string>(); const edges: Edge[] = [];
-  geometry.sideFaces.forEach((face) => face.forEach((index, position) => {
-    const next = face[(position + 1) % face.length]; const key = index < next ? `${index}:${next}` : `${next}:${index}`;
-    if (!keys.has(key)) { keys.add(key); edges.push([geometry.vertices[index], geometry.vertices[next]]); }
-  }));
-  geometry.endRings.forEach((ring) => ring.forEach((index, position) => {
-    const next = ring[(position + 1) % ring.length]; const key = index < next ? `${index}:${next}` : `${next}:${index}`;
-    if (!keys.has(key)) { keys.add(key); edges.push([geometry.vertices[index], geometry.vertices[next]]); }
-  }));
-  return edges;
+  return outlineSegments(geometry).map(([a, b]) => [a, b] as Edge);
 }
 
 /** Small, label-free isometric generated from the same vertices used by the editor. */

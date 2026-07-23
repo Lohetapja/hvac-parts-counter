@@ -114,6 +114,24 @@ export function buildTransitionGeometry(part: CustomPart): TransitionGeometry {
   return { vertices, sideFaces, endRings, ports, centrelineLengthMm: Math.hypot(part.lengthMm, part.horizontalOffsetMm, part.verticalOffsetMm), cornerEdgeLengthsMm, surfaceAreaM2: areaMm2 / 1_000_000 };
 }
 
+/** Circumferential indices that read as the fitting's fold / silhouette corners. */
+export const OUTLINE_CORNERS = [0, 6, 12, 18] as const;
+
+/**
+ * The clean, readable outline of a lofted or swept body: the inlet and outlet
+ * outlines plus the four longitudinal corner sweeps — straight for lofts, curved
+ * for elbows. Deliberately excludes every intermediate loft ring, surface
+ * subdivision and triangulation edge, which belong to construction geometry only.
+ */
+export function outlineSegments(geometry: TransitionGeometry): Array<[Vertex3, Vertex3]> {
+  const stride = geometry.endRings[0].length || RING_POINTS;
+  const ringCount = Math.max(2, Math.round(geometry.vertices.length / stride));
+  const segments: Array<[Vertex3, Vertex3]> = [];
+  geometry.endRings.forEach((ring) => ring.forEach((index, position) => segments.push([geometry.vertices[index], geometry.vertices[ring[(position + 1) % ring.length]]])));
+  OUTLINE_CORNERS.forEach((corner) => { for (let ring = 0; ring < ringCount - 1; ring += 1) segments.push([geometry.vertices[ring * stride + corner], geometry.vertices[(ring + 1) * stride + corner]]); });
+  return segments;
+}
+
 export function solveBodyLengthFromEdge(part: CustomPart, kind: DerivedEdgeKind, targetLengthMm: number, edgeIndex = 0): EdgeLengthSolution {
   const geometry = buildTransitionGeometry(part); const index = ((edgeIndex % 24) + 24) % 24; const start = geometry.vertices[geometry.endRings[0][index]]; const end = geometry.vertices[geometry.endRings[1][index]];
   const deltaX = end.x - start.x; const deltaY = end.y - start.y; const axialLocal = end.z - start.z - part.lengthMm;

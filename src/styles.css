@@ -128,6 +128,8 @@ button, input, select, textarea { font: inherit; } button { cursor: pointer; }
 .lock-conflict small { color: #ffb5b5; }
 .hero-preset-panel { margin-bottom: 10px; padding: 9px; border: 1px solid #2b4055; border-radius: 9px; background: #0c1520; }.preset-heading { display: flex; justify-content: space-between; gap: 8px; }.preset-chips { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }.hero-preset-panel fieldset { margin-top: 9px; }
 .technical-view .body-edge { stroke: #31566b; stroke-width: 1.15; vector-effect: non-scaling-stroke; }
+.technical-view .construction { stroke: #9bb0be; stroke-width: .6; stroke-dasharray: 3 3; opacity: .7; vector-effect: non-scaling-stroke; fill: none; }
+.technical-view polyline.transition-edge { fill: none; }
 .technical-view polygon.end-a, .technical-view polygon.end-b { fill: none; }
 .visual-audit { grid-column: 1 / -1; display: grid; gap: 14px; }.visual-audit-row { padding: 12px; border: 1px solid #345268; border-radius: 10px; background: #0b141e; }.visual-audit-row > header { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 9px; }.visual-audit-row h3 { margin: 0; }.visual-audit-thumb { display: grid; grid-template-columns: 110px minmax(180px,320px); align-items: center; gap: 10px; color: var(--muted); }.visual-audit-thumb svg { width: 100%; height: 130px; color: #9ed2f0; background: #081019; border-radius: 8px; }.visual-audit-views { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 6px; }.visual-audit-views .technical-view svg { height: 180px; }.visual-audit-row > p { color: var(--muted); font-size: 9px; }
 /* --- Catalogue status --- */

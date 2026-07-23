@@ -10,6 +10,11 @@ coverage/
 *.pdf
 public/test-drawings/
 /local-test-drawings/
+# Developer scan harness + drawing-derived diagnostics (never commit)
+/tools/out/
+/tools/*.bundle.mjs
+/scan-harness.*
+*.svg
 # Local regression corpus (real HVAC drawings; never commit the PDFs)
 test-drawings/*
 !test-drawings/README.md

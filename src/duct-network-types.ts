@@ -23,6 +23,7 @@ export type DuctNetworkSource = 'manual' | 'assisted-vector' | 'mixed';
 
 export type DuctNodeType =
   | 'continuation'
+  | 'vertical-continuation'
   | 'bend'
   | 'branch'
   | 'transition'
@@ -84,6 +85,15 @@ export interface DuctNode {
   verticalLengthMm?: number;
   confirmedVerticalLength?: boolean;
   floorDestination?: string;
+  // Riser cross-symbol evidence (vertical-continuation nodes): one diagonal → Poisto,
+  // an X → Tulo. Strong system evidence combined with arrow/seed evidence, never a
+  // reason to discard geometry. `systemEvidenceConflict` flags a disagreement for review.
+  systemEvidence?: 'tulo' | 'poisto';
+  systemEvidenceSource?: 'riser-cross-symbol';
+  systemEvidenceConflict?: boolean;
+  crossingCount?: number;
+  /** The connected network continues to another floor through this riser. */
+  continuesToAnotherFloor?: boolean;
   matchingReference?: string;
   matchingNodeId?: string;
   angleDeg?: number;

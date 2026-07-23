@@ -69,6 +69,8 @@ let basePageHeight = 1;
 let fitScale = 1;
 let zoomFactor = 1;
 let renderScale = 1;
+// Developer-only duct-seed capture (gated behind ?dev-seed). Never active in the normal UI.
+let seedCaptureArmed = false;
 let tool: Tool = 'pan';
 let currentTrace: Point[] = [];
 let previewPoint: Point | null = null;
@@ -1081,6 +1083,8 @@ els.overlayCanvas.addEventListener('pointerdown', (event) => {
     if (metrics) { pinchState = { startDistance: metrics.distance, startZoom: zoomFactor }; panState = null; }
     return;
   }
+  // Developer seed capture pre-empts every normal tool while armed.
+  if (seedCaptureArmed) { captureDuctSeed(event); return; }
   if (tool === 'pan') {
     const point = eventPoint(event); const marker = hitAirflow(point); if (marker) { selectedAirflowIds = new Set([marker.id]); renderUi(); return; }
     if (ductUi?.hitTest(point, renderScale)) return;
@@ -1144,3 +1148,110 @@ els.customScale.value = String(project.customScaleRatio || project.scaleRatio);
 els.customScaleField.classList.toggle('hidden', els.scalePreset.value !== 'custom');
 if (loadProject()) els.savedStatus.textContent = `Restored ${new Date(project.updatedAt).toLocaleString()} — reload PDF to view drawing`;
 renderDetections(); renderUi();
+
+// --- DEVELOPER-ONLY: duct seed coordinate capture (Stage-1 tooling) ---------
+// Gated behind ?dev-seed; never present in the normal worker UI. Converts one click
+// inside a duct body into viewport (scale-1), true-PDF (Y-up) and normalized spaces,
+// transformed correctly under zoom and pan, then copies it for the Node harness or
+// saves it locally. The scale-1 viewport space equals the harness segment space.
+interface DevSeed { fileName: string; fingerprint: string; page: number; viewportX: number; viewportY: number; pdfX: number; pdfY: number; nx: number; ny: number; regionHalfW: number; regionHalfH: number; profileWidthMm: number; profileHeightMm: number; capturedAt: string; }
+let lastDevSeed: DevSeed | null = null;
+const DEV_SEED_KEY = 'hvac-dev-duct-seed';
+function devSeedHarnessArgs(s: DevSeed): string {
+  return `--seed-x ${s.viewportX.toFixed(1)} --seed-y ${s.viewportY.toFixed(1)} --width ${s.profileWidthMm} --height ${s.profileHeightMm} --region-hw ${s.regionHalfW} --region-hh ${s.regionHalfH}`;
+}
+function devSeedNum(id: string, fallback: number): number { const value = Number((document.getElementById(id) as HTMLInputElement | null)?.value); return Number.isFinite(value) && value ? value : fallback; }
+function captureDuctSeed(event: PointerEvent): void {
+  if (!pdfPage) { toast('Load a PDF before capturing a seed'); return; }
+  const point = eventPoint(event); // scale-1 overlay space (0..basePageWidth × 0..basePageHeight), Y-down
+  const [pdfX, pdfY] = pdfPage.getViewport({ scale: 1 }).convertToPdfPoint(point.x, point.y); // true PDF user space, Y-up
+  lastDevSeed = {
+    fileName: project.drawing?.fileName ?? 'drawing.pdf', fingerprint: project.drawing?.fingerprint ?? '', page: project.page,
+    viewportX: point.x, viewportY: point.y, pdfX, pdfY, nx: point.x / basePageWidth, ny: point.y / basePageHeight,
+    regionHalfW: devSeedNum('devSeedHW', 250), regionHalfH: devSeedNum('devSeedHH', 180),
+    profileWidthMm: devSeedNum('devSeedW', 500), profileHeightMm: devSeedNum('devSeedH', 200), capturedAt: new Date().toISOString(),
+  };
+  const out = document.getElementById('devSeedOut');
+  if (out) out.textContent = [
+    `viewport (scale-1, ${Math.round(basePageWidth)}×${Math.round(basePageHeight)}):  x=${point.x.toFixed(1)}  y=${point.y.toFixed(1)}`,
+    `PDF page (Y-up points):  x=${pdfX.toFixed(1)}  y=${pdfY.toFixed(1)}`,
+    `normalized:  x=${lastDevSeed.nx.toFixed(4)}  y=${lastDevSeed.ny.toFixed(4)}`,
+    `zoom ${(renderScale / fitScale * 100).toFixed(0)}%  ·  region ±${lastDevSeed.regionHalfW}×±${lastDevSeed.regionHalfH}  ·  profile ${lastDevSeed.profileWidthMm}x${lastDevSeed.profileHeightMm}`,
+    ``, `harness:`, devSeedHarnessArgs(lastDevSeed),
+  ].join('\n');
+}
+function armDevSeedCapture(on: boolean): void {
+  seedCaptureArmed = on;
+  const arm = document.getElementById('devSeedArm') as HTMLButtonElement | null;
+  if (arm) { arm.textContent = on ? 'Capturing — click the duct (Esc cancels)' : 'Arm capture'; arm.style.background = on ? '#b5541f' : '#1f6f9c'; }
+  if (on && pdfPage) els.overlayCanvas.style.cursor = 'crosshair';
+}
+// DEV-ONLY auto-load from the Vite dev endpoint (see vite.config.ts). import.meta.env.DEV
+// is false in production, so this whole path is stripped from the build.
+async function devAutoLoadLocalPdf(name: string): Promise<void> {
+  status(`DEV LOCAL PDF — loading ${name} (not included in build)…`);
+  try {
+    const response = await fetch(`/__dev_local_pdf__/${encodeURIComponent(name)}`);
+    if (!response.ok) { toast(`DEV local PDF failed (${response.status})`); status(`DEV local PDF endpoint returned ${response.status}.`); return; }
+    const blob = await response.blob();
+    await loadPdf(new File([blob], name, { type: 'application/pdf' }));
+    armDevSeedCapture(true);
+  } catch (error) { console.error(error); toast('DEV local PDF load error'); }
+}
+function setupDevSeedCapture(): void {
+  const panel = document.createElement('div');
+  panel.id = 'devSeedPanel';
+  panel.style.cssText = 'position:fixed;right:12px;bottom:12px;z-index:9999;width:340px;padding:12px;background:#0d1a26;color:#e8f2fb;border:1px solid #2f4c63;border-radius:10px;font:12px/1.5 system-ui,sans-serif;box-shadow:0 12px 40px rgba(0,0,0,.5)';
+  panel.innerHTML = `
+    <div style="font-weight:700;margin-bottom:6px">Dev · Capture duct seed coordinate</div>
+    <button id="devSeedArm" style="width:100%;padding:8px;margin-bottom:8px;border-radius:8px;border:0;background:#1f6f9c;color:#fff;font-weight:600;cursor:pointer">Arm capture</button>
+    <div style="display:flex;gap:6px;margin-bottom:6px">
+      <label style="flex:1">region ±H<input id="devSeedHW" type="number" value="250" style="width:100%"></label>
+      <label style="flex:1">region ±V<input id="devSeedHH" type="number" value="180" style="width:100%"></label>
+    </div>
+    <div style="display:flex;gap:6px;margin-bottom:6px">
+      <label style="flex:1">profile W<input id="devSeedW" type="number" value="500" style="width:100%"></label>
+      <label style="flex:1">profile H<input id="devSeedH" type="number" value="200" style="width:100%"></label>
+    </div>
+    <pre id="devSeedOut" style="white-space:pre-wrap;background:#07121c;padding:8px;border-radius:6px;max-height:190px;overflow:auto;margin:0 0 8px;font-size:11px">Arm capture, then click inside the 500x200 duct body.</pre>
+    <div style="display:flex;gap:6px">
+      <button id="devSeedCopy" style="flex:1;padding:7px;border-radius:8px;border:0;background:#2b445a;color:#fff;cursor:pointer">Copy coordinates</button>
+      <button id="devSeedSave" style="flex:1;padding:7px;border-radius:8px;border:0;background:#2b6b45;color:#fff;cursor:pointer">Save diagnostic seed</button>
+    </div>`;
+  document.body.appendChild(panel);
+  const out = panel.querySelector<HTMLPreElement>('#devSeedOut')!;
+  const arm = panel.querySelector<HTMLButtonElement>('#devSeedArm')!;
+  arm.addEventListener('click', () => armDevSeedCapture(!seedCaptureArmed));
+  panel.querySelector<HTMLButtonElement>('#devSeedCopy')!.addEventListener('click', () => { if (!lastDevSeed) { toast('Capture a seed first'); return; } void navigator.clipboard?.writeText(devSeedHarnessArgs(lastDevSeed)); toast('Harness args copied'); });
+  panel.querySelector<HTMLButtonElement>('#devSeedSave')!.addEventListener('click', () => { if (!lastDevSeed) { toast('Capture a seed first'); return; } localStorage.setItem(DEV_SEED_KEY, JSON.stringify(lastDevSeed)); out.textContent = `SAVED to ${DEV_SEED_KEY}\n\n${out.textContent}`; });
+  window.addEventListener('keydown', (event) => { if (event.key === 'Escape' && seedCaptureArmed) armDevSeedCapture(false); });
+  const saved = localStorage.getItem(DEV_SEED_KEY); if (saved) out.textContent = `Saved seed on file:\n${saved}`;
+  // Offscreen region → ASCII render. Independent of the viewer element, so it works
+  // even when the Browser pane is not displayed (no compositing). Coordinates are the
+  // scale-1 viewport space (0..basePageWidth × 0..basePageHeight).
+  (window as unknown as { __devAscii?: unknown }).__devAscii = async (cx: number, cy: number, halfW: number, halfH: number, scale = 3, cols = 200): Promise<string> => {
+    if (!pdfPage) return 'no pdf';
+    const x0 = cx - halfW, y0 = cy - halfH, w = halfW * 2, h = halfH * 2;
+    const canvas = document.createElement('canvas'); canvas.width = Math.max(1, Math.round(w * scale)); canvas.height = Math.max(1, Math.round(h * scale));
+    const ctx = canvas.getContext('2d'); if (!ctx) return 'no ctx';
+    const viewport = pdfPage.getViewport({ scale });
+    await pdfPage.render({ canvas, canvasContext: ctx, viewport, transform: [1, 0, 0, 1, -x0 * scale, -y0 * scale] }).promise;
+    const img = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+    const rows = Math.max(6, Math.round(cols * h / w * 0.5)); const bw = canvas.width / cols, bh = canvas.height / rows; const ramp = ' .:-=+*#%@';
+    let outStr = '';
+    for (let gy = 0; gy < rows; gy += 1) { let row = '';
+      for (let gx = 0; gx < cols; gx += 1) { let sum = 0, n = 0;
+        for (let y = Math.floor(gy * bh); y < Math.floor((gy + 1) * bh); y += 1) for (let x = Math.floor(gx * bw); x < Math.floor((gx + 1) * bw); x += 1) { const i = (y * canvas.width + x) * 4; const alpha = img[i + 3]; const lum = alpha === 0 ? 255 : img[i] * 0.3 + img[i + 1] * 0.59 + img[i + 2] * 0.11; sum += 255 - lum; n += 1; }
+        const d = n ? sum / n / 255 : 0; row += ramp[Math.min(ramp.length - 1, Math.floor(d * ramp.length * 2.5))];
+      }
+      outStr += row + '\n';
+    }
+    return outStr;
+  };
+}
+if (new URLSearchParams(window.location.search).has('dev-seed')) setupDevSeedCapture();
+// DEV-ONLY: auto-load a local drawing through the normal pipeline (?dev-pdf=NAME).
+if (import.meta.env.DEV) {
+  const devPdf = new URLSearchParams(window.location.search).get('dev-pdf');
+  if (devPdf) void devAutoLoadLocalPdf(devPdf);
+}
